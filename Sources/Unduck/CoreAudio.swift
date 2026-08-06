@@ -3,6 +3,11 @@ import CoreAudio
 
 // Thin, defensive wrappers over the HAL C property API. Everything returns
 // optionals instead of trapping so a transient HAL hiccup never crashes the app.
+//
+// Every call here is a synchronous XPC round-trip to coreaudiod, so the wrappers
+// make exactly one of them per read. The `AudioObjectHasProperty` pre-check these
+// used to do doubled the round-trip count for nothing: a property the object does
+// not have already comes back as a non-noErr status from the Get itself.
 enum CA {
     static let system = AudioObjectID(kAudioObjectSystemObject)
 
@@ -15,7 +20,6 @@ enum CA {
     /// Read a fixed-size scalar property (UInt32, pid_t, AudioObjectID, etc.).
     static func scalar<T>(_ object: AudioObjectID, _ selector: AudioObjectPropertySelector, _ initial: T) -> T? {
         var addr = address(selector)
-        guard AudioObjectHasProperty(object, &addr) else { return nil }
         var value = initial
         var size = UInt32(MemoryLayout<T>.size)
         let status = withUnsafeMutablePointer(to: &value) {
@@ -27,7 +31,6 @@ enum CA {
     /// Read a CFString property (device UID, bundle ID, …).
     static func string(_ object: AudioObjectID, _ selector: AudioObjectPropertySelector) -> String? {
         var addr = address(selector)
-        guard AudioObjectHasProperty(object, &addr) else { return nil }
         var value: Unmanaged<CFString>? = nil
         var size = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
         let status = withUnsafeMutablePointer(to: &value) {
@@ -40,16 +43,17 @@ enum CA {
     /// Read a variable-length array property of a fixed element type.
     static func array<T>(_ object: AudioObjectID, _ selector: AudioObjectPropertySelector, _ element: T.Type) -> [T] {
         var addr = address(selector)
-        guard AudioObjectHasProperty(object, &addr) else { return [] }
         var size: UInt32 = 0
         guard AudioObjectGetPropertyDataSize(object, &addr, 0, nil, &size) == noErr, size > 0 else { return [] }
         let count = Int(size) / MemoryLayout<T>.stride
         guard count > 0 else { return [] }
-        var buffer = [T](repeating: memZero(), count: count)
-        let status = buffer.withUnsafeMutableBytes {
-            AudioObjectGetPropertyData(object, &addr, 0, nil, &size, $0.baseAddress!)
+        // Uninitialised storage: no zero-fill pass, and no per-call scratch
+        // allocation just to synthesise a zero element to repeat.
+        return [T](unsafeUninitializedCapacity: count) { buffer, initialized in
+            var byteSize = size
+            let status = AudioObjectGetPropertyData(object, &addr, 0, nil, &byteSize, buffer.baseAddress!)
+            initialized = status == noErr ? min(count, Int(byteSize) / MemoryLayout<T>.stride) : 0
         }
-        return status == noErr ? buffer : []
     }
 
     // MARK: convenience
@@ -65,6 +69,10 @@ enum CA {
     static var processObjects: [AudioObjectID] {
         array(system, kAudioHardwarePropertyProcessObjectList, AudioObjectID.self)
     }
+
+    /// Our own process object. Fixed for the lifetime of the process, so it is
+    /// resolved once instead of on every call-state change.
+    static let ownProcessObject: AudioObjectID? = processObject(forPID: getpid())
 
     static func processObject(forPID pid: pid_t) -> AudioObjectID? {
         var addr = address(kAudioHardwarePropertyTranslatePIDToProcessObject)
@@ -88,12 +96,4 @@ enum CA {
     static func tapStreamFormat(_ tap: AudioObjectID) -> AudioStreamBasicDescription? {
         scalar(tap, kAudioTapPropertyFormat, AudioStreamBasicDescription())
     }
-}
-
-// Zero-initialised value for numeric HAL element types.
-private func memZero<T>() -> T {
-    let ptr = UnsafeMutablePointer<T>.allocate(capacity: 1)
-    defer { ptr.deallocate() }
-    memset(ptr, 0, MemoryLayout<T>.size)
-    return ptr.pointee
 }

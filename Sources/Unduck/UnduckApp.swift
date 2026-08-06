@@ -104,13 +104,7 @@ struct PopoverView: View {
 
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Show Unduck in").font(.caption).foregroundStyle(.secondary)
-                    Picker("Show Unduck in", selection: $model.appearance) {
-                        Text("Menu Bar").tag(AppModel.Appearance.menuBar)
-                        Text("Dock").tag(AppModel.Appearance.dock)
-                        Text("Both").tag(AppModel.Appearance.both)
-                    }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
+                    AppearancePicker(selection: $model.appearance)
                 }
                 .padding(.top, 2)
             }
@@ -155,26 +149,10 @@ struct PopoverView: View {
                     .frame(width: 46, alignment: .trailing)
             }
 
-            meter
-
-            if model.limitingDB > 0.4 {
-                Label("Limiting \(String(format: "%.0f", model.limitingDB)) dB on loud content",
-                      systemImage: "exclamationmark.triangle.fill")
-                    .font(.caption2).foregroundStyle(.orange)
-            }
+            // Observes the meter object, not the app model, so ten updates a
+            // second redraw a 6pt bar instead of the entire popover.
+            MeterSection(meter: model.meter, active: model.isActive)
         }
-    }
-
-    private var meter: some View {
-        GeometryReader { geo in
-            ZStack(alignment: .leading) {
-                Capsule().fill(.quaternary)
-                Capsule()
-                    .fill(model.isActive ? Color.green.gradient : Color.secondary.gradient)
-                    .frame(width: max(2, geo.size.width * model.meterLevel))
-            }
-        }
-        .frame(height: 6)
     }
 
     private var footer: some View {
@@ -194,5 +172,84 @@ struct PopoverView: View {
         .padding(8)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(color.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+    }
+}
+
+/// Level bar + limiter notice. Split out so the 10 Hz meter updates invalidate
+/// only this subtree.
+private struct MeterSection: View {
+    @ObservedObject var meter: MeterModel
+    let active: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(.quaternary)
+                    Capsule()
+                        .fill(active ? Color.green.gradient : Color.secondary.gradient)
+                        .frame(width: max(2, geo.size.width * meter.level))
+                }
+            }
+            .frame(height: 6)
+
+            if meter.limitingDB > 0.4 {
+                Label("Limiting \(String(format: "%.0f", meter.limitingDB)) dB on loud content",
+                      systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption2).foregroundStyle(.orange)
+            }
+        }
+    }
+}
+
+/// A hand-rolled segmented control.
+///
+/// SwiftUI's `.pickerStyle(.segmented)` bridges to `NSSegmentedControl`, which
+/// hosts its SwiftUI labels in nested view graphs. Measuring it re-enters the
+/// SwiftUI view graph *during* the outer layout pass, which re-registers
+/// observation and re-dirties the graph - inside a `MenuBarExtra` window that
+/// never reached a fixed point, so the run loop re-ran layout on every pass and
+/// pinned a core. Plain buttons keep the appearance and stay entirely inside
+/// SwiftUI's own layout, with no AppKit round-trip to re-enter through.
+private struct AppearancePicker: View {
+    @Binding var selection: AppModel.Appearance
+
+    private struct Option: Identifiable {
+        let id: AppModel.Appearance
+        let title: String
+    }
+
+    private static let options = [
+        Option(id: .menuBar, title: "Menu Bar"),
+        Option(id: .dock, title: "Dock"),
+        Option(id: .both, title: "Both"),
+    ]
+
+    var body: some View {
+        HStack(spacing: 2) {
+            ForEach(Self.options) { option in
+                let isSelected = selection == option.id
+                Button {
+                    if !isSelected { selection = option.id }
+                } label: {
+                    Text(option.title)
+                        .font(.caption)
+                        .fontWeight(isSelected ? .semibold : .regular)
+                        .foregroundStyle(isSelected ? Color.white : Color.secondary)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 4)
+                        .background {
+                            if isSelected {
+                                RoundedRectangle(cornerRadius: 5).fill(Color.accentColor)
+                            }
+                        }
+                        .contentShape(RoundedRectangle(cornerRadius: 5))
+                }
+                .buttonStyle(.plain)
+                .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
+            }
+        }
+        .padding(2)
+        .background(RoundedRectangle(cornerRadius: 7).fill(.quaternary))
     }
 }
