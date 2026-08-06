@@ -5,9 +5,9 @@
 #   scripts/publish.sh            # uses ./VERSION
 #   scripts/publish.sh 0.1.4      # bumps ./VERSION first
 #
-# Why this triggers the workflow explicitly: push events do not currently fire
-# workflow runs on this repository (see docs/ci-notes.md), so publish.yml is
-# invoked through the API instead, which does work.
+# publish.yml also has a push trigger on VERSION, so a plain push publishes too.
+# This calls it explicitly so the script can watch the run and fail loudly rather
+# than leaving you to notice later. See docs/ci-notes.md.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"; cd "$ROOT"
 

@@ -1,33 +1,43 @@
 # CI notes
 
-## Push events do not trigger workflow runs on this repository
+## Why releases are triggered through the API
 
-Observed 2026-08-06. `workflow_dispatch` and `repository_dispatch` create runs
-normally. Pushes create none — not to branches, not to tags.
+`scripts/publish.sh` invokes `publish.yml` with `gh workflow run` instead of
+relying on the push trigger. That was a workaround for symptoms observed on
+2026-08-06, and it is kept because it is deterministic — but the diagnosis below
+matters if you are wondering whether something is wrong with the repository.
 
-This is why releases are published through `scripts/publish.sh` (which calls the
-workflow via the API) rather than by simply pushing a tag.
+**It was a GitHub incident, not this repository.**
 
-### It is not a workflow-configuration problem
+GitHub Actions was in a **major outage from 15:22 UTC on 2026-08-06**, reporting
+workflow runs failing or delayed, GitHub-hosted runner capacity constraints, and
+**webhook delivery delays**. Delayed webhook/event delivery is exactly what makes
+a push land normally while no workflow run is ever created.
 
-The reproduction is a workflow with no filters at all, on a Linux runner, so
-neither branch/path filters nor macOS runner capacity are involved:
+Every observation below was made between 18:03 and 19:30 UTC that day — entirely
+inside the outage window. Treat the conclusions as "what a broken Actions
+backplane looks like", not as a property of this repo.
 
-```yaml
-name: Ping
-on: push
-jobs:
-  ping:
-    runs-on: ubuntu-latest
-    steps:
-      - run: echo ok
-```
+### What was observed
 
-Committed and pushed to `main`. Result: **zero** workflow runs created, polled
-over two minutes. The same repository ran `workflow_dispatch` jobs to completion
-before and after.
+- Pushes to `main` and a `v*` tag created **zero** workflow runs.
+- A workflow with no filters at all, on a Linux runner, also created zero runs:
 
-### Ruled out
+  ```yaml
+  name: Ping
+  on: push
+  jobs:
+    ping:
+      runs-on: ubuntu-latest
+      steps:
+        - run: echo ok
+  ```
+
+- `workflow_dispatch` reliably created runs.
+- Runner assignment was erratic: `macos-26` jobs sat unassigned 10+ minutes and
+  were cancelled outright twice; later an `ubuntu-latest` job did the same.
+
+### What was ruled out at the time
 
 | Checked | Result |
 | --- | --- |
@@ -38,21 +48,21 @@ before and after.
 | Push actually reached GitHub | yes — commits and tags confirmed on the remote |
 | Push attribution | `PushEvent` recorded with `actor=SidPad03`, a real user |
 | Repo visibility | public, not a fork, default branch `main` |
-| Disable + re-enable Actions via API | no change |
+| Disable + re-enable Actions via API | no change (settings restored afterwards) |
 
-### Where to look next
+None of these were the cause.
 
-The remaining candidates are settings the REST API does not expose:
+### If it happens again
 
-- Repository **Settings → Actions → General**
-- Account **https://github.com/settings/actions**
+1. Check <https://www.githubstatus.com> first. It would have explained all of the
+   above in one step.
+2. If Actions is green and pushes still do not trigger, then look at repository
+   **Settings → Actions → General** and account
+   <https://github.com/settings/actions>.
 
-If both look correct, this is worth a GitHub Support ticket — the `Ping`
-workflow above is a minimal, self-contained reproduction.
+### The push trigger is already wired up
 
-### When it starts working
-
-`publish.yml` already carries the right trigger:
+`publish.yml` carries:
 
 ```yaml
 on:
@@ -61,13 +71,21 @@ on:
     paths: ["VERSION"]
 ```
 
-It is inert today and becomes the automatic path the moment push events fire
-again. Nothing needs to change.
+So pushing a `VERSION` bump publishes automatically whenever Actions is healthy.
+`publish.sh` calling the workflow explicitly is belt-and-braces: it also means
+`publish.sh` can watch the run and report failure, which a bare push cannot.
 
 ## Why there is no build pipeline
 
-There was one briefly (`swift build` + packaging on `macos-26`) and it worked —
-but macOS runners queued badly, twice sitting unassigned for 10+ minutes before
-GitHub cancelled the job outright. Since the app has to be built on a Mac anyway,
-it is simpler to build locally and let CI do only the part that needs GitHub:
-tagging and publishing. `publish.yml` therefore runs on Linux and never compiles.
+There was one briefly — `swift build` plus packaging on `macos-26` — and it ran
+green. It was removed deliberately, not because it failed:
+
+- The app must be built on macOS anyway (the Apple frameworks are only in the
+  macOS SDK), so CI compiling it duplicates what the developer already does.
+- macOS runners are the slowest and scarcest tier.
+- The build that ships is then the one that was actually tested locally, rather
+  than a second, separately-produced binary.
+
+`publish.yml` therefore runs on Linux and never compiles: it tags the commit and
+uploads whatever installers are committed under `releases/`. The `pre-push` hook
+in `.githooks/` is what keeps that folder honest.

@@ -127,10 +127,10 @@ scripts/bump-cask.sh 0.1.4    # so `brew install` serves the new build
 into `releases/`, checks the version baked into the bundle matches, commits,
 pushes, and triggers `publish.yml`.
 
-> **Push events don't currently trigger workflow runs on this repo**, which is why
-> `publish.sh` invokes the workflow through the API instead of just pushing a tag.
-> `publish.yml` already has the right push trigger and becomes automatic the moment
-> that's fixed. Details and a minimal reproduction: [`docs/ci-notes.md`](docs/ci-notes.md).
+> `publish.sh` triggers the workflow through the API rather than relying on the
+> push event. `publish.yml` *does* have a `push` trigger on `VERSION`, so a plain
+> push publishes too - but calling it explicitly lets the script watch the run and
+> fail loudly. See [`docs/ci-notes.md`](docs/ci-notes.md).
 
 To publish something already committed, use the **Actions** tab, or:
 

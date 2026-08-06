@@ -6,16 +6,12 @@ name: Publish Release
 # That is why it runs on Linux: it is fast, free, and never waits for a macOS
 # runner.
 #
-# IMPORTANT - push triggers do not fire on this repository. A workflow with a
-# bare `on: push` and no filters produced zero runs, so this is not a syntax or
-# filter problem; see docs/ci-notes.md. Until that is resolved, the push trigger
-# below is inert and you publish with either of:
+# Pushing a VERSION bump publishes automatically. scripts/publish.sh does the
+# whole thing - build, commit, push - and then calls this workflow explicitly so
+# it can watch the run and fail loudly instead of leaving you to check later.
 #
-#   scripts/publish.sh                          # builds, commits, pushes, publishes
+#   scripts/publish.sh 0.1.4
 #   gh workflow run publish.yml -f version=0.1.4
-#
-# The push trigger is kept so this becomes fully automatic the moment triggering
-# starts working again.
 on:
   workflow_dispatch:
     inputs:
