@@ -53,11 +53,11 @@ Sources/
     AudioRouter.swift   process tap + private aggregate device + IOProc (fail-open teardown)
     CallDetector.swift  polls FaceTime mic activity, debounced
     AppModel.swift      state machine, settings, metering, launch-at-login, device-change rebuild
-    Updater.swift       self-update via the Gitea releases API
+    Updater.swift       self-update via the GitHub releases API
     UnduckApp.swift     MenuBarExtra UI (Liquid Glass materials, media-boost slider, meter)
 phase0/                 the throwaway go/no-go measurement tool (see phase0/README.md)
 scripts/                icon + packaging + release helpers
-.gitea/workflows/       tag-triggered .pkg release pipeline
+.github/workflows/      build.yml (compile check) + release.yml (tag -> .dmg/.pkg release)
 ```
 
 ## Build from source
@@ -87,34 +87,51 @@ scripts/package.sh     # build + icon + Unduck.app + Unduck-<version>.pkg in dis
 - Toggle **Launch at login** if you want it always on.
 - Set **Media boost** to taste (defaults to ~25 dB, matching the measured duck).
 
-## Updates (optional)
+## Updates
 
-Since you build locally, this is optional - only relevant if you choose to publish
-a release. **Check for Updates…** in the menu (and a quiet check at launch) hits
-your Gitea's release API, compares the tag to the running version, and - if newer -
-downloads the `.pkg` and opens the macOS Installer.
+**Check for Updates…** in the menu (and a quiet check at launch) reads the
+[GitHub releases API](https://api.github.com/repos/SidPad03/unduck/releases/latest),
+compares the tag to the running version and - if newer - downloads the `.pkg` and
+opens the macOS Installer. If a release has no `.pkg` attached it falls back to
+the `.dmg`. Repo coordinates live in `Info.plist`
+(`UnduckUpdateBase`/`Owner`/`Repo`), so a fork only has to change those.
+
+The tag, the `VERSION` file and the bundle's `CFBundleShortVersionString` must all
+agree - the release workflow enforces this, because a mismatch would leave the
+updater offering an update the user already has, forever.
 
 Why this and not Sparkle: Sparkle wants a Developer-ID-signed app, an EdDSA
-keypair, and a zipped-app appcast - heavy for a personal, ad-hoc-signed `.pkg`
-build on self-hosted Gitea. The lightweight Gitea-API check fits better. If Unduck
-ever goes public + notarized, switch to Sparkle (its appcast can live on the same
-Gitea). Repo coordinates live in `Info.plist` (`UnduckUpdateBase/Owner/Repo`).
+keypair, and a zipped-app appcast - heavy for an ad-hoc-signed `.pkg`. If Unduck
+ever goes notarized, switch to Sparkle.
 
 ## Building & releasing
 
-Build locally on a Mac - **there is no CI**, by design. A SwiftUI + CoreAudio app
-can't be built or cross-compiled on Linux (the Apple frameworks live only in the
-macOS SDK), so a Linux Gitea runner can't produce it. Gitea hosts the **source
-only**; you build and run on your Mac:
+CI runs on GitHub's **macOS** runners (`macos-26`). A SwiftUI + CoreAudio app
+can't be cross-compiled on Linux - the Apple frameworks live only in the macOS
+SDK - which is why the old self-hosted Linux runner couldn't build it.
+
+- `.github/workflows/build.yml` - compiles and packages on every push and PR.
+- `.github/workflows/release.yml` - on a `v*` tag, builds the `.app`, `.pkg` and
+  `.dmg` and attaches the `.pkg` + `.dmg` to a GitHub Release.
+
+To cut a version:
 
 ```bash
-scripts/build-dmg.sh    # -> dist/ and releases/Unduck-<version>.dmg (the shareable DMG)
-scripts/build-pkg.sh    # optional: a .pkg installer instead
+echo 0.1.3 > VERSION
+git commit -am "Release 0.1.3"
+git tag v0.1.3
+git push origin main --tags
 ```
 
-To cut a version: edit `VERSION`, run `scripts/build-dmg.sh`, then commit the new
-`releases/Unduck-<version>.dmg`. (The built installer lives in the repo under
-`releases/`; there is no separate release-upload step.)
+The workflow fails fast if `VERSION` doesn't match the tag. You can also run it
+by hand from the **Actions** tab (`workflow_dispatch`).
+
+Locally, the same artifacts come from:
+
+```bash
+scripts/build-dmg.sh [version]   # -> dist/Unduck-<version>.dmg (+ .pkg via package.sh)
+scripts/package.sh   [version]   # -> dist/Unduck.app + dist/Unduck-<version>.pkg
+```
 
 ## Phase 0 tool
 

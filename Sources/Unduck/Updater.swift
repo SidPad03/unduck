@@ -4,21 +4,24 @@ import OSLog
 
 private let log = Logger(subsystem: "com.sigmanet.unduck", category: "Updater")
 
-/// Lightweight self-updater against a Gitea release feed.
+/// Lightweight self-updater against the GitHub Releases API.
+///
+/// Releases are published by `.github/workflows/release.yml`, which builds on a
+/// macOS runner and attaches both a `.pkg` and a `.dmg` to the tag's release.
+/// This reads the newest release, compares its tag to the running version, and
+/// hands the `.pkg` to the macOS Installer (falling back to the `.dmg` if no
+/// `.pkg` is attached).
 ///
 /// Why not Sparkle: Sparkle wants a Developer-ID-signed app + an EdDSA keypair +
-/// an appcast, and its update artifact is a zipped .app, not a .pkg. For a
-/// personal, ad-hoc-signed build distributed as a .pkg from a self-hosted Gitea,
-/// that's more machinery than value. This hits Gitea's own releases API, compares
-/// the tag to the running version, and hands the .pkg to the macOS Installer.
-/// (If this ever goes public + notarized, switch to Sparkle - the appcast can
-/// live on the same Gitea.)
+/// an appcast, and its update artifact is a zipped .app, not a .pkg. For an
+/// ad-hoc-signed build published as release assets, that's more machinery than
+/// value. If Unduck ever goes notarized, switch to Sparkle.
 @MainActor
 final class Updater: ObservableObject {
 
-    // Point these at your repo. Overridable via Info.plist (UnduckUpdateBase / Owner / Repo).
-    private var apiBase: String { info("UnduckUpdateBase") ?? "https://git.sigmanet.com" }
-    private var owner: String   { info("UnduckUpdateOwner") ?? "sid" }
+    // Overridable via Info.plist (UnduckUpdateBase / Owner / Repo).
+    private var apiBase: String { info("UnduckUpdateBase") ?? "https://api.github.com" }
+    private var owner: String   { info("UnduckUpdateOwner") ?? "SidPad03" }
     private var repo: String    { info("UnduckUpdateRepo") ?? "unduck" }
 
     @Published var status: String = ""
@@ -38,11 +41,11 @@ final class Updater: ObservableObject {
         Task {
             defer { busy = false }
             do {
-                let (tag, pkgURL) = try await fetchLatest()
+                let (tag, assetURL) = try await fetchLatest()
                 latestVersion = tag
-                if isNewer(tag, than: currentVersion), let pkgURL {
+                if isNewer(tag, than: currentVersion), let assetURL {
                     status = "Update available: \(tag)"
-                    if interactive || promptedAutomatically() { offerInstall(tag: tag, pkg: pkgURL) }
+                    if interactive || promptedAutomatically() { offerInstall(tag: tag, asset: assetURL) }
                 } else {
                     status = "Up to date (\(currentVersion))"
                     if interactive { alert("You're up to date", "Unduck \(currentVersion) is the latest version.") }
@@ -57,47 +60,75 @@ final class Updater: ObservableObject {
 
     private func promptedAutomatically() -> Bool { true } // auto-check still offers, just non-nagging
 
-    private func fetchLatest() async throws -> (tag: String, pkg: URL?) {
-        let url = URL(string: "\(apiBase)/api/v1/repos/\(owner)/\(repo)/releases/latest")!
+    private func fetchLatest() async throws -> (tag: String, asset: URL?) {
+        let url = URL(string: "\(apiBase)/repos/\(owner)/\(repo)/releases/latest")!
         var request = URLRequest(url: url)
         request.timeoutInterval = 15
+        request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        request.setValue("2022-11-28", forHTTPHeaderField: "X-GitHub-Api-Version")
+        request.setValue("Unduck/\(currentVersion)", forHTTPHeaderField: "User-Agent")
+
         let (data, response) = try await URLSession.shared.data(for: request)
-        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
-            throw NSError(domain: "Unduck", code: 1, userInfo: [NSLocalizedDescriptionKey: "Gitea returned a non-200 response"])
+        guard let http = response as? HTTPURLResponse else {
+            throw updateError("No response from GitHub.")
         }
-        let release = try JSONDecoder().decode(GiteaRelease.self, from: data)
-        let pkg = release.assets.first { $0.name.hasSuffix(".pkg") }?.browser_download_url
-        return (release.tag_name, pkg.flatMap(URL.init(string:)))
+        switch http.statusCode {
+        case 200: break
+        case 404:
+            // No published release yet - not an error worth alarming the user about.
+            throw updateError("This repository has no published releases yet.")
+        case 403, 429:
+            throw updateError("GitHub rate-limited the update check. Try again later.")
+        default:
+            throw updateError("GitHub returned HTTP \(http.statusCode).")
+        }
+
+        let release = try JSONDecoder().decode(GitHubRelease.self, from: data)
+        // Prefer the .pkg: it installs in one click. The .dmg is the human-facing
+        // download and only gets used if no .pkg was attached.
+        let asset = release.assets.first { $0.name.hasSuffix(".pkg") }
+            ?? release.assets.first { $0.name.hasSuffix(".dmg") }
+        return (release.tag_name, asset?.browser_download_url.flatMap(URL.init(string:)))
     }
 
-    private func offerInstall(tag: String, pkg: URL) {
+    private func offerInstall(tag: String, asset: URL) {
+        let isPkg = asset.pathExtension.lowercased() == "pkg"
         let a = NSAlert()
         a.messageText = "Update available: \(tag)"
-        a.informativeText = "You have \(currentVersion). Download and install \(tag)? The macOS Installer will open."
-        a.addButton(withTitle: "Download & Install")
+        a.informativeText = isPkg
+            ? "You have \(currentVersion). Download and install \(tag)? The macOS Installer will open."
+            : "You have \(currentVersion). Download \(tag)? The disk image will open - drag Unduck into Applications."
+        a.addButton(withTitle: isPkg ? "Download & Install" : "Download")
         a.addButton(withTitle: "Later")
         NSApp.activate(ignoringOtherApps: true)
         guard a.runModal() == .alertFirstButtonReturn else { return }
-        download(pkg)
+        download(asset)
     }
 
-    private func download(_ pkg: URL) {
+    private func download(_ asset: URL) {
         busy = true
-        status = "Downloading \(pkg.lastPathComponent)…"
+        status = "Downloading \(asset.lastPathComponent)…"
         Task {
             defer { busy = false }
             do {
-                let (tmp, _) = try await URLSession.shared.download(from: pkg)
-                let dest = FileManager.default.temporaryDirectory.appendingPathComponent(pkg.lastPathComponent)
+                let (tmp, response) = try await URLSession.shared.download(from: asset)
+                if let http = response as? HTTPURLResponse, http.statusCode != 200 {
+                    throw updateError("Download failed with HTTP \(http.statusCode).")
+                }
+                let dest = FileManager.default.temporaryDirectory.appendingPathComponent(asset.lastPathComponent)
                 try? FileManager.default.removeItem(at: dest)
                 try FileManager.default.moveItem(at: tmp, to: dest)
                 status = "Opening installer…"
-                NSWorkspace.shared.open(dest)   // launches the macOS Installer for the .pkg
+                NSWorkspace.shared.open(dest)   // .pkg -> Installer, .dmg -> mounts
             } catch {
                 status = "Download failed"
                 alert("Download failed", error.localizedDescription)
             }
         }
+    }
+
+    private func updateError(_ message: String) -> NSError {
+        NSError(domain: "Unduck", code: 1, userInfo: [NSLocalizedDescriptionKey: message])
     }
 
     private func alert(_ title: String, _ body: String) {
@@ -119,8 +150,8 @@ final class Updater: ObservableObject {
     }
 }
 
-private struct GiteaRelease: Decodable {
+private struct GitHubRelease: Decodable {
     let tag_name: String
     let assets: [Asset]
-    struct Asset: Decodable { let name: String; let browser_download_url: String }
+    struct Asset: Decodable { let name: String; let browser_download_url: String? }
 }

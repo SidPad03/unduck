@@ -41,8 +41,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>LSUIElement</key><true/>
   <key>NSAudioCaptureUsageDescription</key><string>Unduck captures your media apps' audio so it can replay it at the volume you choose while a call ducks everything else. Audio is never recorded or sent anywhere.</string>
   <key>NSMicrophoneUsageDescription</key><string>Unduck watches microphone activity to detect when a call starts and ends. It never records.</string>
-  <key>UnduckUpdateBase</key><string>https://git.sigmanet.com</string>
-  <key>UnduckUpdateOwner</key><string>sid</string>
+  <key>UnduckUpdateBase</key><string>https://api.github.com</string>
+  <key>UnduckUpdateOwner</key><string>SidPad03</string>
   <key>UnduckUpdateRepo</key><string>unduck</string>
 </dict>
 </plist>

@@ -1,9 +1,9 @@
 #!/bin/bash
 # Build a shareable DMG with a drag-to-Applications layout. Writes to dist/ and
-# copies into releases/ (the committed distributable). Usage: scripts/build-dmg.sh
+# copies into releases/. Usage: scripts/build-dmg.sh [version]  (defaults to ./VERSION)
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"; cd "$ROOT"
-VERSION="$(tr -d '[:space:]' < VERSION)"
+VERSION="${1:-$(tr -d '[:space:]' < VERSION)}"
 APP_NAME="Unduck"
 VOL="Unduck"
 APP="dist/${APP_NAME}.app"
@@ -25,6 +25,11 @@ hdiutil create -srcfolder "$STAGE" -volname "$VOL" -fs HFS+ -format UDRW -o "$RW
 DEV="$(hdiutil attach "$RW" -readwrite -noverify -noautoopen | egrep '^/dev/' | head -1 | awk '{print $1}')"
 sleep 1
 
+if [ -n "${CI:-}" ]; then
+  # No logged-in Finder to drive on a CI runner, and no way to grant it
+  # Automation permission. Skip the cosmetic layout; the DMG still works.
+  echo "==> CI: skipping the Finder window layout"
+else
 echo "==> Arranging the window (needs Finder Automation permission the first time)"
 LAYOUT="$(mktemp).applescript"
 cat > "$LAYOUT" <<OSA
@@ -50,6 +55,7 @@ OSA
 perl -e 'alarm 40; exec @ARGV' osascript "$LAYOUT" >/dev/null 2>&1 \
   || echo "    layout skipped (grant Terminal control of Finder in Privacy & Security, then re-run for the arrow/background). The DMG still works."
 rm -f "$LAYOUT"
+fi
 
 sync; sleep 1
 hdiutil detach "$DEV" >/dev/null 2>&1 || hdiutil detach "/Volumes/$VOL" >/dev/null 2>&1 || true
