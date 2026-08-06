@@ -8,6 +8,20 @@ audio at a level you control while leaving the call audio untouched.
 > Not the web project of the same name (the DuckDuckGo `!bang` redirector). This
 > is a native macOS app.
 
+## Install (Homebrew)
+
+```bash
+brew install --cask SidPad03/tap/unduck
+```
+
+First launch: because it's ad-hoc signed (not notarized), macOS may block it once.
+Right-click **Unduck** in Applications and choose **Open**, or run
+`xattr -dr com.apple.quarantine /Applications/Unduck.app`. Requires macOS 26.1+.
+Update later with `brew upgrade --cask unduck`.
+
+(Prefer a plain download? Grab the `.dmg` from
+[Releases](https://github.com/SidPad03/unduck/releases) and drag Unduck into Applications.)
+
 ## Status (honest)
 
 Phase 0 measurement is **done and passed** (`docs/spike-results.md`): on macOS
@@ -55,9 +69,9 @@ swift build            # compile
 scripts/package.sh     # build + icon + Unduck.app + Unduck-<version>.pkg in dist/
 ```
 
-## Install
+## Install manually (DMG)
 
-1. Download `Unduck-<version>.dmg` from the repo's `releases/` folder (or build it below).
+1. Download `Unduck-<version>.dmg` from the [Releases page](https://github.com/SidPad03/unduck/releases) (or build it below).
 2. Open the `.dmg` and drag **Unduck** onto the **Applications** shortcut.
 3. Because it's ad-hoc signed (personal use, not notarized), the first launch may be
    blocked as "unidentified developer" - right-click Unduck in Applications and choose
