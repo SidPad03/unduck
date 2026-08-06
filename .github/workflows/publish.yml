@@ -1,0 +1,127 @@
+name: Publish Release
+
+# The app is built on a Mac (scripts/publish.sh), and the installers are
+# committed under releases/. This workflow does no compiling at all - it just
+# tags the commit and publishes whatever is in that folder as a GitHub Release.
+# That is why it runs on Linux: it is fast, free, and never waits for a macOS
+# runner.
+#
+# IMPORTANT - push triggers do not fire on this repository. A workflow with a
+# bare `on: push` and no filters produced zero runs, so this is not a syntax or
+# filter problem; see docs/ci-notes.md. Until that is resolved, the push trigger
+# below is inert and you publish with either of:
+#
+#   scripts/publish.sh                          # builds, commits, pushes, publishes
+#   gh workflow run publish.yml -f version=0.1.4
+#
+# The push trigger is kept so this becomes fully automatic the moment triggering
+# starts working again.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to publish, without the leading v (defaults to the VERSION file)"
+        required: false
+  repository_dispatch:
+    types: [publish-release]
+  push:
+    branches: [main]
+    paths: ["VERSION"]
+
+permissions:
+  contents: write   # needed to create the tag, the release, and upload assets
+
+concurrency:
+  group: publish-release
+  cancel-in-progress: false   # never interrupt a half-uploaded release
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: v
+        run: |
+          set -euo pipefail
+          VERSION="${{ github.event.inputs.version }}"
+          [ -n "$VERSION" ] || VERSION="${{ github.event.client_payload.version }}"
+          [ -n "$VERSION" ] || VERSION="$(tr -d '[:space:]' < VERSION)"
+          if [ -z "$VERSION" ]; then
+            echo "::error::Could not determine a version to publish."
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION"    >> "$GITHUB_OUTPUT"
+          echo "Publishing $VERSION"
+
+      - name: The installer must be committed in releases/
+        id: assets
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.v.outputs.version }}"
+          DMG="releases/Unduck-${VERSION}.dmg"
+          PKG="releases/Unduck-${VERSION}.pkg"
+
+          if [ ! -f "$DMG" ]; then
+            echo "::error::$DMG is missing."
+            echo "::error::Build it on your Mac and commit it:  scripts/publish.sh"
+            echo "::error::Present in releases/:"
+            ls -1 releases/ 2>/dev/null | sed 's/^/::error::  /' || echo "::error::  (folder is empty)"
+            exit 1
+          fi
+
+          ASSETS="$DMG"
+          if [ -f "$PKG" ]; then
+            ASSETS="$ASSETS $PKG"
+          else
+            # Not fatal: the updater falls back to the .dmg. It just means a
+            # one-click update turns into a drag-to-Applications.
+            echo "::warning::$PKG is missing; publishing the .dmg only."
+          fi
+          echo "list=$ASSETS" >> "$GITHUB_OUTPUT"
+          ls -lh $ASSETS
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.v.outputs.version }}"
+          TAG="${{ steps.v.outputs.tag }}"
+
+          NOTES=$(cat <<'EOF'
+          Native arm64 build for macOS 26.1+.
+
+          **Install with Homebrew**
+
+              brew install --cask SidPad03/tap/unduck
+
+          **Or download** `Unduck-VERSION.dmg` below and drag Unduck into Applications.
+
+          The build is ad-hoc signed rather than notarized, so macOS blocks the
+          first launch. Right-click **Unduck** in Applications and choose **Open**,
+          or run:
+
+              xattr -dr com.apple.quarantine /Applications/Unduck.app
+
+          The `.pkg` is what the in-app **Check for Updates…** downloads.
+          EOF
+          )
+          NOTES="${NOTES//VERSION/$VERSION}"
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists; replacing its assets."
+            gh release upload "$TAG" ${{ steps.assets.outputs.list }} --clobber
+          else
+            # --target creates the tag at this commit if it does not exist yet.
+            gh release create "$TAG" \
+              --target "$GITHUB_SHA" \
+              --title "Unduck $TAG" \
+              --notes "$NOTES" \
+              ${{ steps.assets.outputs.list }}
+          fi
+
+          echo "### Published [$TAG](${{ github.server_url }}/${{ github.repository }}/releases/tag/$TAG)" >> "$GITHUB_STEP_SUMMARY"

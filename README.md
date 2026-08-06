@@ -56,8 +56,10 @@ Sources/
     Updater.swift       self-update via the GitHub releases API
     UnduckApp.swift     MenuBarExtra UI (Liquid Glass materials, media-boost slider, meter)
 phase0/                 the throwaway go/no-go measurement tool (see phase0/README.md)
-scripts/                icon + packaging + release helpers
-.github/workflows/      build.yml (compile check) + release.yml (tag -> .dmg/.pkg release)
+scripts/                icon + packaging + release helpers (publish.sh, bump-cask.sh)
+releases/               locally built installers, committed - this is what gets published
+.githooks/              pre-push guard: no VERSION bump without its installer
+.github/workflows/      publish.yml (tags + releases what is in releases/; no compiling)
 ```
 
 ## Build from source
@@ -106,27 +108,50 @@ ever goes notarized, switch to Sparkle.
 
 ## Building & releasing
 
-CI runs on GitHub's **macOS** runners (`macos-26`). A SwiftUI + CoreAudio app
-can't be cross-compiled on Linux - the Apple frameworks live only in the macOS
-SDK - which is why the old self-hosted Linux runner couldn't build it.
+The app is built **on a Mac** - a SwiftUI + CoreAudio app can't be cross-compiled,
+the Apple frameworks live only in the macOS SDK. The installers are committed
+under `releases/`, and CI does only the part that needs GitHub: tagging and
+publishing. `.github/workflows/publish.yml` therefore runs on Linux and never
+compiles anything.
 
-- `.github/workflows/build.yml` - compiles and packages on every push and PR.
-- `.github/workflows/release.yml` - on a `v*` tag, builds the `.app`, `.pkg` and
-  `.dmg` and attaches the `.pkg` + `.dmg` to a GitHub Release.
+### Releasing
 
-To cut a version:
+One command does everything - build, commit, push, publish:
 
 ```bash
-echo 0.1.3 > VERSION
-git commit -am "Release 0.1.3"
-git tag v0.1.3
-git push origin main --tags
+scripts/publish.sh 0.1.4
+scripts/bump-cask.sh 0.1.4    # so `brew install` serves the new build
 ```
 
-The workflow fails fast if `VERSION` doesn't match the tag. You can also run it
-by hand from the **Actions** tab (`workflow_dispatch`).
+`publish.sh` writes `VERSION`, builds `dist/Unduck-0.1.4.{dmg,pkg}`, copies them
+into `releases/`, checks the version baked into the bundle matches, commits,
+pushes, and triggers `publish.yml`.
 
-Locally, the same artifacts come from:
+> **Push events don't currently trigger workflow runs on this repo**, which is why
+> `publish.sh` invokes the workflow through the API instead of just pushing a tag.
+> `publish.yml` already has the right push trigger and becomes automatic the moment
+> that's fixed. Details and a minimal reproduction: [`docs/ci-notes.md`](docs/ci-notes.md).
+
+To publish something already committed, use the **Actions** tab, or:
+
+```bash
+gh workflow run publish.yml -f version=0.1.4
+```
+
+### The pre-push guard
+
+`publish.yml` publishes whatever is in `releases/` - it doesn't build. So pushing
+a `VERSION` bump without the matching installer would publish a broken or stale
+release. A hook blocks that:
+
+```bash
+scripts/setup-hooks.sh    # once per clone; sets core.hooksPath
+```
+
+Pushing `main` is then refused unless `releases/Unduck-<VERSION>.dmg` is committed
+in the pushed commit. Docs-only change? `git push --no-verify`.
+
+### Building without releasing
 
 ```bash
 scripts/build-dmg.sh [version]   # -> dist/Unduck-<version>.dmg (+ .pkg via package.sh)

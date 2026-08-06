@@ -70,5 +70,6 @@ fastlane/screenshots/**/*.png
 fastlane/test_output
 
 
-# GitHub distributes the DMG via Releases, not in-tree
-releases/
+# releases/ is deliberately NOT ignored. The app is built on a Mac and the
+# installers are committed there; publish.yml turns whatever is in that folder
+# into a GitHub Release. See "Releasing" in the README.
