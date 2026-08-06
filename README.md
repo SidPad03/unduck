@@ -90,11 +90,21 @@ scripts/package.sh     # build + icon + Unduck.app + Unduck-<version>.pkg in dis
 ## Updates
 
 **Check for Updates…** in the menu (and a quiet check at launch) reads the
-[GitHub releases API](https://api.github.com/repos/SidPad03/unduck/releases/latest),
-compares the tag to the running version and - if newer - downloads the `.pkg` and
-opens the macOS Installer. If a release has no `.pkg` attached it falls back to
-the `.dmg`. Repo coordinates live in `Info.plist`
-(`UnduckUpdateBase`/`Owner`/`Repo`), so a fork only has to change those.
+[GitHub releases API](https://api.github.com/repos/SidPad03/unduck/releases/latest)
+and compares the tag to the running version. If it's newer, one click updates in
+place: Unduck downloads the `.dmg`, replaces its own bundle, and restarts. No
+installer wizard and no admin prompt.
+
+How the swap works: the DMG is mounted, the new `Unduck.app` is copied out and
+checked (its version must match the tag, and its signature must verify), then a
+small script waits for Unduck to quit, swaps the bundle and relaunches it. If the
+copy fails the old version is moved back, so a failed update can't leave you
+without an app.
+
+It falls back to downloading and opening the `.pkg` when a release has no `.dmg`,
+or when the app lives somewhere it can't rewrite without privileges. Repo
+coordinates live in `Info.plist` (`UnduckUpdateBase`/`Owner`/`Repo`), so a fork
+only has to change those.
 
 The tag, the `VERSION` file and the bundle's `CFBundleShortVersionString` must all
 agree - the release workflow enforces this, because a mismatch would leave the

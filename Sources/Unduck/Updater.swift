@@ -4,18 +4,20 @@ import OSLog
 
 private let log = Logger(subsystem: "com.sigmanet.unduck", category: "Updater")
 
-/// Lightweight self-updater against the GitHub Releases API.
+/// Self-updater against the GitHub Releases API.
 ///
-/// Releases are published by `.github/workflows/release.yml`, which builds on a
-/// macOS runner and attaches both a `.pkg` and a `.dmg` to the tag's release.
-/// This reads the newest release, compares its tag to the running version, and
-/// hands the `.pkg` to the macOS Installer (falling back to the `.dmg` if no
-/// `.pkg` is attached).
+/// The update is applied **in place**: download the DMG, mount it, stage the new
+/// Unduck.app, then hand a small shell script the job of waiting for this process
+/// to exit, swapping the bundle, and relaunching. From the user's side it is one
+/// click and the app comes back on the new version.
 ///
-/// Why not Sparkle: Sparkle wants a Developer-ID-signed app + an EdDSA keypair +
-/// an appcast, and its update artifact is a zipped .app, not a .pkg. For an
-/// ad-hoc-signed build published as release assets, that's more machinery than
-/// value. If Unduck ever goes notarized, switch to Sparkle.
+/// It used to download the `.pkg` and open the macOS Installer, which meant a
+/// five-step wizard and an admin prompt to update a menu-bar utility. The `.pkg`
+/// is still published for fresh installs, and is still used as a fallback when a
+/// release has no DMG or when the bundle can't be replaced without privileges.
+///
+/// Why not Sparkle: it wants a Developer-ID-signed app, an EdDSA keypair, and an
+/// appcast. If Unduck ever goes notarized, switch to it.
 @MainActor
 final class Updater: ObservableObject {
 
@@ -32,8 +34,13 @@ final class Updater: ObservableObject {
 
     private func info(_ key: String) -> String? { Bundle.main.infoDictionary?[key] as? String }
 
+    private struct Asset {
+        let url: URL
+        var isDMG: Bool { url.pathExtension.lowercased() == "dmg" }
+    }
+
     /// `interactive == true` shows alerts (menu "Check for Updates…"); false is the
-    /// quiet launch/daily check that only speaks up when there's actually an update.
+    /// quiet launch check that only speaks up when there's actually an update.
     func check(interactive: Bool) {
         guard !busy else { return }
         busy = true
@@ -41,11 +48,11 @@ final class Updater: ObservableObject {
         Task {
             defer { busy = false }
             do {
-                let (tag, assetURL) = try await fetchLatest()
+                let (tag, asset) = try await fetchLatest()
                 latestVersion = tag
-                if isNewer(tag, than: currentVersion), let assetURL {
+                if isNewer(tag, than: currentVersion), let asset {
                     status = "Update available: \(tag)"
-                    if interactive || promptedAutomatically() { offerInstall(tag: tag, asset: assetURL) }
+                    offerInstall(tag: tag, asset: asset)
                 } else {
                     status = "Up to date (\(currentVersion))"
                     if interactive { alert("You're up to date", "Unduck \(currentVersion) is the latest version.") }
@@ -58,9 +65,7 @@ final class Updater: ObservableObject {
         }
     }
 
-    private func promptedAutomatically() -> Bool { true } // auto-check still offers, just non-nagging
-
-    private func fetchLatest() async throws -> (tag: String, asset: URL?) {
+    private func fetchLatest() async throws -> (tag: String, asset: Asset?) {
         let url = URL(string: "\(apiBase)/repos/\(owner)/\(repo)/releases/latest")!
         var request = URLRequest(url: url)
         request.timeoutInterval = 15
@@ -69,56 +74,186 @@ final class Updater: ObservableObject {
         request.setValue("Unduck/\(currentVersion)", forHTTPHeaderField: "User-Agent")
 
         let (data, response) = try await URLSession.shared.data(for: request)
-        guard let http = response as? HTTPURLResponse else {
-            throw updateError("No response from GitHub.")
-        }
+        guard let http = response as? HTTPURLResponse else { throw err("No response from GitHub.") }
         switch http.statusCode {
         case 200: break
-        case 404:
-            // No published release yet - not an error worth alarming the user about.
-            throw updateError("This repository has no published releases yet.")
-        case 403, 429:
-            throw updateError("GitHub rate-limited the update check. Try again later.")
-        default:
-            throw updateError("GitHub returned HTTP \(http.statusCode).")
+        case 404: throw err("This repository has no published releases yet.")
+        case 403, 429: throw err("GitHub rate-limited the update check. Try again later.")
+        default: throw err("GitHub returned HTTP \(http.statusCode).")
         }
 
         let release = try JSONDecoder().decode(GitHubRelease.self, from: data)
-        // Prefer the .pkg: it installs in one click. The .dmg is the human-facing
-        // download and only gets used if no .pkg was attached.
-        let asset = release.assets.first { $0.name.hasSuffix(".pkg") }
-            ?? release.assets.first { $0.name.hasSuffix(".dmg") }
-        return (release.tag_name, asset?.browser_download_url.flatMap(URL.init(string:)))
+        // Prefer the DMG: it carries the .app, which is what an in-place swap
+        // needs. The .pkg is the fallback and goes through the Installer.
+        let picked = release.assets.first { $0.name.hasSuffix(".dmg") }
+            ?? release.assets.first { $0.name.hasSuffix(".pkg") }
+        let assetURL = picked?.browser_download_url.flatMap(URL.init(string:))
+        return (release.tag_name, assetURL.map(Asset.init))
     }
 
-    private func offerInstall(tag: String, asset: URL) {
-        let isPkg = asset.pathExtension.lowercased() == "pkg"
+    private func offerInstall(tag: String, asset: Asset) {
+        // An in-place swap needs write access to the folder holding the bundle.
+        let inPlace = asset.isDMG && Self.canReplaceBundle()
+
         let a = NSAlert()
         a.messageText = "Update available: \(tag)"
-        a.informativeText = isPkg
-            ? "You have \(currentVersion). Download and install \(tag)? The macOS Installer will open."
-            : "You have \(currentVersion). Download \(tag)? The disk image will open - drag Unduck into Applications."
-        a.addButton(withTitle: isPkg ? "Download & Install" : "Download")
+        a.informativeText = inPlace
+            ? "You have \(currentVersion). Unduck will download \(tag), replace itself, and restart."
+            : "You have \(currentVersion). Download \(tag)? It will open so you can install it."
+        a.addButton(withTitle: inPlace ? "Update & Restart" : "Download")
         a.addButton(withTitle: "Later")
         NSApp.activate(ignoringOtherApps: true)
         guard a.runModal() == .alertFirstButtonReturn else { return }
-        download(asset)
+
+        if inPlace {
+            selfUpdate(tag: tag, dmg: asset.url)
+        } else {
+            downloadAndOpen(asset.url)
+        }
     }
 
-    private func download(_ asset: URL) {
+    // MARK: in-place update
+
+    private func selfUpdate(tag: String, dmg: URL) {
+        busy = true
+        status = "Downloading \(tag)…"
+        let bundleURL = Bundle.main.bundleURL
+        let expected = tag.trimmingCharacters(in: CharacterSet(charactersIn: "vV "))
+
+        Task {
+            defer { busy = false }
+            do {
+                let downloaded = try await downloadToTemp(dmg)
+                status = "Installing \(tag)…"
+                // Mounting, copying and verifying are all blocking work - keep
+                // them off the main thread so the menu doesn't freeze.
+                let staged = try await Task.detached(priority: .userInitiated) {
+                    try Self.stageApp(fromDMG: downloaded, expectedVersion: expected)
+                }.value
+
+                try Self.launchSwapHelper(staged: staged, destination: bundleURL)
+                status = "Restarting…"
+                log.notice("self-update to \(tag, privacy: .public) staged; restarting")
+                // Teardown runs on willTerminate, so the tap is released and media
+                // un-mutes before the swap happens.
+                NSApp.terminate(nil)
+            } catch {
+                status = "Update failed"
+                log.error("self-update failed: \(error.localizedDescription, privacy: .public)")
+                alert("Couldn't install the update",
+                      "\(error.localizedDescription)\n\nYou can download it manually from the Releases page.")
+            }
+        }
+    }
+
+    private func downloadToTemp(_ url: URL) async throws -> URL {
+        let (tmp, response) = try await URLSession.shared.download(from: url)
+        if let http = response as? HTTPURLResponse, http.statusCode != 200 {
+            throw err("Download failed with HTTP \(http.statusCode).")
+        }
+        let dest = FileManager.default.temporaryDirectory
+            .appendingPathComponent("unduck-update-\(UUID().uuidString)-\(url.lastPathComponent)")
+        try? FileManager.default.removeItem(at: dest)
+        try FileManager.default.moveItem(at: tmp, to: dest)
+        return dest
+    }
+
+    /// Can we replace our own bundle without asking for privileges? Replacing a
+    /// bundle means writing into its parent directory. /Applications is normally
+    /// group-writable by admins, so this is usually true.
+    private nonisolated static func canReplaceBundle() -> Bool {
+        let parent = Bundle.main.bundleURL.deletingLastPathComponent().path
+        return FileManager.default.isWritableFile(atPath: parent)
+    }
+
+    /// Mount the DMG, copy Unduck.app out of it, verify it, unmount. Returns the
+    /// staged copy. Runs off the main thread.
+    private nonisolated static func stageApp(fromDMG dmg: URL, expectedVersion: String) throws -> URL {
+        let fm = FileManager.default
+        let work = fm.temporaryDirectory.appendingPathComponent("unduck-stage-\(UUID().uuidString)")
+        let mount = work.appendingPathComponent("mnt")
+        try fm.createDirectory(at: mount, withIntermediateDirectories: true)
+
+        // -mountpoint keeps this off /Volumes and out of the user's way; -nobrowse
+        // stops it appearing in Finder.
+        guard run("/usr/bin/hdiutil",
+                  ["attach", dmg.path, "-nobrowse", "-readonly", "-noverify", "-mountpoint", mount.path]) == 0 else {
+            throw err("Could not open the downloaded disk image.")
+        }
+        defer {
+            _ = run("/usr/bin/hdiutil", ["detach", mount.path, "-quiet"])
+            try? fm.removeItem(at: dmg)
+        }
+
+        let source = mount.appendingPathComponent("Unduck.app")
+        guard fm.fileExists(atPath: source.path) else {
+            throw err("The disk image didn't contain Unduck.app.")
+        }
+
+        let staged = work.appendingPathComponent("Unduck.app")
+        // ditto, not cp: it preserves extended attributes and the code signature.
+        guard run("/usr/bin/ditto", [source.path, staged.path]) == 0 else {
+            throw err("Could not copy the new version out of the disk image.")
+        }
+
+        // Refuse to install something that isn't the version we were promised, or
+        // whose signature is broken.
+        let plist = staged.appendingPathComponent("Contents/Info.plist")
+        let got = (NSDictionary(contentsOf: plist)?["CFBundleShortVersionString"] as? String) ?? ""
+        guard got == expectedVersion else {
+            throw err("The download reported version \(got.isEmpty ? "unknown" : got), expected \(expectedVersion).")
+        }
+        guard run("/usr/bin/codesign", ["--verify", "--strict", staged.path]) == 0 else {
+            throw err("The downloaded copy failed signature verification.")
+        }
+        return staged
+    }
+
+    /// Spawn the script that waits for us to quit, swaps the bundle and relaunches.
+    /// It outlives this process - once the parent exits the child is reparented.
+    private nonisolated static func launchSwapHelper(staged: URL, destination: URL) throws {
+        let script = """
+        #!/bin/sh
+        # Written by Unduck's updater. Waits for the old process to exit, swaps the
+        # bundle, and relaunches. Rolls back if the copy fails.
+        PID="$1"; SRC="$2"; DEST="$3"
+        i=0
+        while kill -0 "$PID" 2>/dev/null && [ $i -lt 150 ]; do sleep 0.2; i=$((i+1)); done
+        kill -0 "$PID" 2>/dev/null && { kill -TERM "$PID" 2>/dev/null; sleep 1; }
+
+        BACKUP="${DEST}.old-$$"
+        mv "$DEST" "$BACKUP" 2>/dev/null || exit 1
+        if /usr/bin/ditto "$SRC" "$DEST"; then
+            /bin/rm -rf "$BACKUP"
+        else
+            /bin/rm -rf "$DEST"
+            mv "$BACKUP" "$DEST"
+        fi
+        /usr/bin/xattr -dr com.apple.quarantine "$DEST" 2>/dev/null
+        /bin/rm -rf "$(dirname "$SRC")"
+        /usr/bin/open "$DEST"
+        """
+        let path = FileManager.default.temporaryDirectory
+            .appendingPathComponent("unduck-swap-\(UUID().uuidString).sh")
+        try script.write(to: path, atomically: true, encoding: .utf8)
+
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/bin/sh")
+        task.arguments = [path.path, String(ProcessInfo.processInfo.processIdentifier),
+                          staged.path, destination.path]
+        try task.run()   // deliberately not waited on
+    }
+
+    // MARK: fallback (no DMG, or the bundle isn't ours to replace)
+
+    private func downloadAndOpen(_ asset: URL) {
         busy = true
         status = "Downloading \(asset.lastPathComponent)…"
         Task {
             defer { busy = false }
             do {
-                let (tmp, response) = try await URLSession.shared.download(from: asset)
-                if let http = response as? HTTPURLResponse, http.statusCode != 200 {
-                    throw updateError("Download failed with HTTP \(http.statusCode).")
-                }
-                let dest = FileManager.default.temporaryDirectory.appendingPathComponent(asset.lastPathComponent)
-                try? FileManager.default.removeItem(at: dest)
-                try FileManager.default.moveItem(at: tmp, to: dest)
-                status = "Opening installer…"
+                let dest = try await downloadToTemp(asset)
+                status = "Opening…"
                 NSWorkspace.shared.open(dest)   // .pkg -> Installer, .dmg -> mounts
             } catch {
                 status = "Download failed"
@@ -127,8 +262,18 @@ final class Updater: ObservableObject {
         }
     }
 
-    private func updateError(_ message: String) -> NSError {
-        NSError(domain: "Unduck", code: 1, userInfo: [NSLocalizedDescriptionKey: message])
+    // MARK: helpers
+
+    @discardableResult
+    private nonisolated static func run(_ tool: String, _ args: [String]) -> Int32 {
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: tool)
+        task.arguments = args
+        task.standardOutput = FileHandle.nullDevice
+        task.standardError = FileHandle.nullDevice
+        do { try task.run() } catch { return -1 }
+        task.waitUntilExit()
+        return task.terminationStatus
     }
 
     private func alert(_ title: String, _ body: String) {
@@ -148,6 +293,11 @@ final class Updater: ObservableObject {
         }
         return false
     }
+}
+
+/// Shared by the main-actor and the detached staging code, so it lives at file scope.
+private func err(_ message: String) -> NSError {
+    NSError(domain: "Unduck", code: 1, userInfo: [NSLocalizedDescriptionKey: message])
 }
 
 private struct GitHubRelease: Decodable {
