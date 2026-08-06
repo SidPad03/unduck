@@ -1,11 +1,13 @@
 # CI notes
 
-## Why releases are triggered through the API
+## The 2026-08-06 "workflows never run" scare
 
-`scripts/publish.sh` invokes `publish.yml` with `gh workflow run` instead of
-relying on the push trigger. That was a workaround for symptoms observed on
-2026-08-06, and it is kept because it is deterministic — but the diagnosis below
-matters if you are wondering whether something is wrong with the repository.
+For a few hours it looked like this repository could not run CI at all: pushes
+and tags created no workflow runs, and the jobs that did get created sat queued
+until GitHub cancelled them. Both `build.yml` and `release.yml` were briefly
+replaced by a Linux-only "publish what the developer committed" workflow.
+
+That was an overreaction to a platform outage. The pipeline was restored.
 
 **It was a GitHub incident, not this repository.**
 
@@ -60,32 +62,26 @@ None of these were the cause.
    **Settings → Actions → General** and account
    <https://github.com/settings/actions>.
 
-### The push trigger is already wired up
+### The pipeline itself was never broken
 
-`publish.yml` carries:
+Worth recording, because it is easy to misread the outage as a code problem:
+during the same window, `release.yml` ran **green end to end** on `macos-26` —
+`swift build -c release`, icon generation, `.app`, `.pkg`, DMG creation, and the
+GitHub Release with both assets attached. `build.yml` also completed
+successfully once it got a runner. Everything that actually executed, worked.
 
-```yaml
-on:
-  push:
-    branches: [main]
-    paths: ["VERSION"]
-```
+Only scheduling was affected: two `macos-26` jobs and later an `ubuntu-latest`
+job sat unassigned for 10+ minutes, and GitHub cancelled some of them outright.
+A cancelled job reports `conclusion: cancelled` with **no steps and an empty
+failure log** — which reads like a failure but means the job never started.
 
-So pushing a `VERSION` bump publishes automatically whenever Actions is healthy.
-`publish.sh` calling the workflow explicitly is belt-and-braces: it also means
-`publish.sh` can watch the run and report failure, which a bare push cannot.
+### If workflows stop running again
 
-## Why there is no build pipeline
+1. Check <https://www.githubstatus.com> **first**. It would have explained all of
+   the above in one step.
+2. Only if Actions is green: repository **Settings → Actions → General**, then
+   account <https://github.com/settings/actions>.
+3. Distinguish "cancelled with no steps" (never got a runner) from a real step
+   failure before changing anything.
 
-There was one briefly — `swift build` plus packaging on `macos-26` — and it ran
-green. It was removed deliberately, not because it failed:
-
-- The app must be built on macOS anyway (the Apple frameworks are only in the
-  macOS SDK), so CI compiling it duplicates what the developer already does.
-- macOS runners are the slowest and scarcest tier.
-- The build that ships is then the one that was actually tested locally, rather
-  than a second, separately-produced binary.
-
-`publish.yml` therefore runs on Linux and never compiles: it tags the commit and
-uploads whatever installers are committed under `releases/`. The `pre-push` hook
-in `.githooks/` is what keeps that folder honest.
+Resist restructuring the pipeline around a platform incident.

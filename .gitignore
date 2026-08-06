@@ -70,6 +70,6 @@ fastlane/screenshots/**/*.png
 fastlane/test_output
 
 
-# releases/ is deliberately NOT ignored. The app is built on a Mac and the
-# installers are committed there; publish.yml turns whatever is in that folder
-# into a GitHub Release. See "Releasing" in the README.
+# Installers are built by CI from the tagged commit and published as GitHub
+# Release assets - they are never committed.
+releases/

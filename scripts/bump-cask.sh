@@ -4,7 +4,8 @@
 #   scripts/bump-cask.sh 0.1.4
 #
 # The cask pins an exact version and sha256, so `brew install --cask` keeps
-# serving the old build until this runs. Easy to forget - publish.sh reminds you.
+# serving the old build until this runs. Run it once release.yml has published
+# the tag - it hashes the asset GitHub is actually serving.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"; cd "$ROOT"
 
