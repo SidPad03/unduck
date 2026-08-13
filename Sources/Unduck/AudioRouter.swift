@@ -141,36 +141,79 @@ final class AudioRouter {
 
         // 3) Render state. Ceiling lives in OUR boosted domain: keep output below
         //    (duck - 0.5) dBFS so that after the system attenuates by `duck`, the
-        //    final level lands under -0.5 dBFS.
+        //    final level lands under -0.5 dBFS. The filter coefficients follow the
+        //    rate we will actually run at - a 44.1 kHz AirPlay or Bluetooth device
+        //    is not the 48 kHz this used to hard-code.
+        let deviceRate = CA.nominalSampleRate(aggregateID) ?? CA.nominalSampleRate(outputDevice) ?? 48_000
         let state = UnsafeMutablePointer<UnduckRenderState>.allocate(capacity: 1)
         let ceiling = powf(10.0, (duckDB - 0.5) / 20.0)
-        unduck_init(state, 48_000.0, powf(10.0, boostDB / 20.0), ceiling)
+        unduck_init(state, Float(deviceRate), powf(10.0, boostDB / 20.0), ceiling)
         stateLock.lock(); renderState = state; stateLock.unlock()
 
+        // Where this device wants stereo content. Not always channels 0 and 1 -
+        // an eight-channel display picks front L/R out of the eight - and on a
+        // multi-channel device the rest must be left silent rather than carrying a
+        // smeared copy of the media. A device that names the same channel twice is
+        // a mono sink and gets the downmix.
+        let outputChannels = CA.outputChannelCount(aggregateID)
+        var stereo = CA.stereoChannels(aggregateID) ?? CA.stereoChannels(outputDevice) ?? (left: 0, right: 1)
+        if outputChannels > 0, stereo.left >= outputChannels || stereo.right >= outputChannels {
+            // A pair the device does not actually have would render to silence.
+            stereo = (left: 0, right: min(1, outputChannels - 1))
+        }
+        let leftChannel = stereo.left
+        let rightChannel = stereo.right
+
+        if let tapFormat = CA.tapStreamFormat(tapID) {
+            if tapFormat.mSampleRate != deviceRate {
+                // The tap's format follows the system's default output device and is
+                // read-only, so this means the device changed rate under us. The
+                // render core degrades gracefully (short blocks render as silence)
+                // and AppModel's rate listener rebuilds the graph.
+                log.notice("tap rate \(tapFormat.mSampleRate) != device rate \(deviceRate); rebuilding on rate change")
+            }
+            log.info("tap \(tapFormat.mChannelsPerFrame)ch @\(tapFormat.mSampleRate) -> device \(outputChannels)ch @\(deviceRate), stereo pair (\(leftChannel), \(rightChannel))")
+        }
+
         // 4) IOProc: tap audio arrives as input, real device is the output. Copy
-        //    input → output through the C render core. Captures only the raw
-        //    pointer - no Swift objects, no ARC on the audio thread.
+        //    input → output through the C render core. Captures only raw pointers
+        //    and Ints - no Swift objects, no ARC on the audio thread.
         var newProc: AudioDeviceIOProcID?
         let procStatus = AudioDeviceCreateIOProcIDWithBlock(&newProc, aggregateID, nil) {
             _, inInputData, _, outOutputData, _ in
-            let outABL = UnsafeMutableAudioBufferListPointer(outOutputData)
-            guard outABL.count > 0,
-                  let out0 = outABL[0].mData?.assumingMemoryBound(to: Float.self) else { return }
-            let outFrames = Int(outABL[0].mDataByteSize) / MemoryLayout<Float>.size
-            let out1 = outABL.count > 1 ? outABL[1].mData?.assumingMemoryBound(to: Float.self) : nil
+            let outList = UnsafeMutableAudioBufferListPointer(outOutputData)
+            silenceBuffers(outList)   // we fill two channels; the rest must not replay stale audio
 
-            let inABL = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: inInputData))
-            let in0 = inABL.count > 0 ? inABL[0].mData?.assumingMemoryBound(to: Float.self) : nil
-            let in1 = inABL.count > 1 ? inABL[1].mData?.assumingMemoryBound(to: Float.self) : nil
+            let outL = locateChannel(outList, leftChannel)
+            guard outL.base != nil else { return }
+            // A device that puts stereo in one channel (mono) is a mono sink: the
+            // render core downmixes rather than dropping a side.
+            let outR = leftChannel == rightChannel ? ChannelRef() : locateChannel(outList, rightChannel)
+            let outFrames = outR.base == nil ? outL.frames : min(outL.frames, outR.frames)
+
+            let inList = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: inInputData))
+            let inL = locateChannel(inList, 0)
+            let inR = locateChannel(inList, 1)
             // The tap and the device can disagree about block size. Pass both counts
             // so the render core never reads past the tap's buffer; when the tap gave
             // us nothing there is no buffer to overrun, so let it render silence
             // through the loop and keep the gain/limiter state gliding.
-            let inFrames = in0 == nil ? outFrames : Int(inABL[0].mDataByteSize) / MemoryLayout<Float>.size
+            let inFrames: Int
+            if inL.base == nil {
+                inFrames = outFrames
+            } else if inR.base == nil {
+                inFrames = inL.frames
+            } else {
+                inFrames = min(inL.frames, inR.frames)
+            }
 
             unduck_render(state,
-                          in0, in1, Int32(inABL.count), Int32(inFrames),
-                          out0, out1, Int32(outABL.count), Int32(outFrames))
+                          UnduckSrc(base: UnsafePointer(inL.base), stride: Int32(inL.stride)),
+                          UnduckSrc(base: UnsafePointer(inR.base), stride: Int32(inR.stride)),
+                          Int32(inFrames),
+                          UnduckDst(base: outL.base, stride: Int32(outL.stride)),
+                          UnduckDst(base: outR.base, stride: Int32(outR.stride)),
+                          Int32(outFrames))
         }
         guard procStatus == noErr, let proc = newProc else {
             teardown(); throw RouterError.ioProcFailed(procStatus)

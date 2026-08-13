@@ -30,5 +30,11 @@ jobs:
       - name: Build (release)
         run: swift build -c release
 
+      # Buffer-list geometry and the DSP core, checked against the device layouts
+      # that actually ship (2ch interleaved, 8ch interleaved, planar, mono).
+      # Needs a full Xcode for the test frameworks, not just the command-line tools.
+      - name: Test
+        run: swift test
+
       - name: Assemble the .app and .pkg
         run: bash scripts/package.sh

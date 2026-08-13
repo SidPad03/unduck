@@ -14,6 +14,12 @@ let package = Package(
             name: "Unduck",
             dependencies: ["CUnduckRender"]
         ),
+        // Buffer-list geometry + the DSP core: the parts that can be checked
+        // without a live call, against the device layouts that actually ship.
+        .testTarget(
+            name: "UnduckTests",
+            dependencies: ["Unduck", "CUnduckRender"]
+        ),
     ],
     swiftLanguageModes: [.v5]   // pragmatic: this app captures raw pointers in the
                                 // IOProc block; v5 mode avoids a wall of Sendable

@@ -18,8 +18,9 @@ enum CA {
     }
 
     /// Read a fixed-size scalar property (UInt32, pid_t, AudioObjectID, etc.).
-    static func scalar<T>(_ object: AudioObjectID, _ selector: AudioObjectPropertySelector, _ initial: T) -> T? {
-        var addr = address(selector)
+    static func scalar<T>(_ object: AudioObjectID, _ selector: AudioObjectPropertySelector, _ initial: T,
+                          scope: AudioObjectPropertyScope = kAudioObjectPropertyScopeGlobal) -> T? {
+        var addr = address(selector, scope)
         var value = initial
         var size = UInt32(MemoryLayout<T>.size)
         let status = withUnsafeMutablePointer(to: &value) {
@@ -41,8 +42,9 @@ enum CA {
     }
 
     /// Read a variable-length array property of a fixed element type.
-    static func array<T>(_ object: AudioObjectID, _ selector: AudioObjectPropertySelector, _ element: T.Type) -> [T] {
-        var addr = address(selector)
+    static func array<T>(_ object: AudioObjectID, _ selector: AudioObjectPropertySelector, _ element: T.Type,
+                         scope: AudioObjectPropertyScope = kAudioObjectPropertyScopeGlobal) -> [T] {
+        var addr = address(selector, scope)
         var size: UInt32 = 0
         guard AudioObjectGetPropertyDataSize(object, &addr, 0, nil, &size) == noErr, size > 0 else { return [] }
         let count = Int(size) / MemoryLayout<T>.stride
@@ -95,5 +97,33 @@ enum CA {
 
     static func tapStreamFormat(_ tap: AudioObjectID) -> AudioStreamBasicDescription? {
         scalar(tap, kAudioTapPropertyFormat, AudioStreamBasicDescription())
+    }
+
+    static func nominalSampleRate(_ device: AudioObjectID) -> Double? {
+        scalar(device, kAudioDevicePropertyNominalSampleRate, Double(0)).flatMap { $0 > 0 ? $0 : nil }
+    }
+
+    /// Which channels of the output stream the device wants stereo content in,
+    /// as 0-based indices. On a two-channel device this is the only pair there
+    /// is; on a Studio Display (an eight-channel interleaved stream) it picks
+    /// front L/R out of the eight, and writing anywhere else is what turns media
+    /// into noise. Mono devices report the same channel twice.
+    static func stereoChannels(_ device: AudioObjectID) -> (left: Int, right: Int)? {
+        let pair = array(device, kAudioDevicePropertyPreferredChannelsForStereo, UInt32.self,
+                         scope: kAudioObjectPropertyScopeOutput)
+        guard pair.count >= 2, pair[0] >= 1, pair[1] >= 1 else { return nil }
+        return (Int(pair[0]) - 1, Int(pair[1]) - 1)   // the property is 1-based
+    }
+
+    /// Total output channels the device presents, summed across its buffers.
+    static func outputChannelCount(_ device: AudioObjectID) -> Int {
+        var addr = address(kAudioDevicePropertyStreamConfiguration, kAudioObjectPropertyScopeOutput)
+        var size: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(device, &addr, 0, nil, &size) == noErr, size > 0 else { return 0 }
+        let raw = UnsafeMutableRawPointer.allocate(byteCount: Int(size), alignment: MemoryLayout<AudioBufferList>.alignment)
+        defer { raw.deallocate() }
+        guard AudioObjectGetPropertyData(device, &addr, 0, nil, &size, raw) == noErr else { return 0 }
+        let list = UnsafeMutableAudioBufferListPointer(raw.assumingMemoryBound(to: AudioBufferList.self))
+        return list.reduce(0) { $0 + Int($1.mNumberChannels) }
     }
 }

@@ -98,6 +98,9 @@ final class AppModel: ObservableObject {
     private let meterInterval: TimeInterval = 0.1
     private var meterTimer: DispatchSourceTimer?
     private var deviceListenerInstalled = false
+    private var observedDevice = AudioObjectID(kAudioObjectUnknown)
+    private var formatListener: AudioObjectPropertyListenerBlock?
+    private var rebuildPending = false
     private var lastExclude: [AudioObjectID] = []
     private var lastComm: [AudioObjectID] = []
     private var armFailedThisCall = false
@@ -232,12 +235,74 @@ final class AppModel: ObservableObject {
                                               mElement: kAudioObjectPropertyElementMain)
         let status = AudioObjectAddPropertyListenerBlock(CA.system, &addr, DispatchQueue.main) { [weak self] _, _ in
             MainActor.assumeIsolated {
-                guard let self, self.routerRunning else { return }
+                guard let self else { return }
+                self.observeOutputFormat()      // follow the new device
+                guard self.routerRunning else { return }
                 log.info("default output changed, rebuilding router")
-                self.arm(exclude: self.lastExclude)
+                self.requestRebuild()
             }
         }
         deviceListenerInstalled = (status == noErr)
+        observeOutputFormat()
+    }
+
+    /// Watch the *current* output device's format, not just which device it is.
+    ///
+    /// The graph is built around one specific layout and sample rate, and the
+    /// process tap's format is fixed when the tap is created and is read-only
+    /// afterwards. Bluetooth and AirPlay devices renegotiate their rate and
+    /// channel count in place - same device, new format - which would leave the
+    /// graph rendering against a layout that no longer exists. Rebuilding on the
+    /// change re-creates the tap at the new format.
+    private func observeOutputFormat() {
+        let device = CA.defaultOutputDevice ?? AudioObjectID(kAudioObjectUnknown)
+        guard device != observedDevice else { return }
+
+        if let block = formatListener, observedDevice != AudioObjectID(kAudioObjectUnknown) {
+            for var addr in Self.formatAddresses {
+                AudioObjectRemovePropertyListenerBlock(observedDevice, &addr, DispatchQueue.main, block)
+            }
+        }
+        formatListener = nil
+        observedDevice = device
+        guard device != AudioObjectID(kAudioObjectUnknown) else { return }
+
+        let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
+            MainActor.assumeIsolated {
+                guard let self, self.routerRunning else { return }
+                log.info("output device format changed, rebuilding router")
+                self.requestRebuild()
+            }
+        }
+        for var addr in Self.formatAddresses {
+            AudioObjectAddPropertyListenerBlock(device, &addr, DispatchQueue.main, block)
+        }
+        formatListener = block
+    }
+
+    private static let formatAddresses = [
+        AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyNominalSampleRate,
+                                   mScope: kAudioObjectPropertyScopeGlobal,
+                                   mElement: kAudioObjectPropertyElementMain),
+        AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyStreamConfiguration,
+                                   mScope: kAudioObjectPropertyScopeOutput,
+                                   mElement: kAudioObjectPropertyElementMain),
+    ]
+
+    /// A device switch fires several of these notifications in a burst (rate,
+    /// then stream config, …). Rebuilding on each one would tear down a graph
+    /// that is still being built, so they coalesce into one rebuild.
+    private func requestRebuild() {
+        guard !rebuildPending else { return }
+        rebuildPending = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.rebuildPending = false
+                guard self.routerRunning else { return }
+                self.arm(exclude: self.lastExclude)
+            }
+        }
     }
 
     // MARK: metering

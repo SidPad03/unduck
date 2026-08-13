@@ -30,10 +30,14 @@ speech), and a boosted signal survives Core Audio's float path. That's the green
 light for the inverse-gain strategy this app implements.
 
 - ✅ **Builds clean, packages to a `.pkg`, launches as a menu-bar agent.** (Verified locally.)
+- ✅ **Plays correctly on outputs other than the built-in speakers.** Up to
+  v0.1.6 anything else (a display, AirPlay, Bluetooth, headphones) came out
+  garbled, because the IOProc assumed one buffer layout and got another. Fixed
+  and covered by tests; see *Output device layouts* below.
 - ⚠️ **The live audio routing (tap → boost → re-inject during a real call) has
-  not yet been verified on a call.** Core Audio process taps fail *silently* when
-  a detail is off, so expect one debugging pass after the first real test. The
-  known traps are already handled in code; see `Sources/Unduck/AudioRouter.swift`.
+  not yet been verified end-to-end on a call.** Core Audio process taps fail
+  *silently* when a detail is off, so expect one debugging pass after the first
+  real test. The known traps are handled in code; see `Sources/Unduck/AudioRouter.swift`.
 
 ## What it does
 
@@ -50,15 +54,36 @@ Sources/
   CUnduckRender/        realtime DSP in C (gain smoothing + limiter) - no ARC on the audio thread
   Unduck/
     CoreAudio.swift     defensive HAL property wrappers
+    BufferGeometry.swift  locates a channel in any AudioBufferList layout
     AudioRouter.swift   process tap + private aggregate device + IOProc (fail-open teardown)
     CallDetector.swift  polls FaceTime mic activity, debounced
-    AppModel.swift      state machine, settings, metering, launch-at-login, device-change rebuild
+    AppModel.swift      state machine, settings, metering, launch-at-login, device/format-change rebuild
     Updater.swift       self-update via the GitHub releases API
     UnduckApp.swift     MenuBarExtra UI (Liquid Glass materials, media-boost slider, meter)
+Tests/UnduckTests/      buffer geometry + DSP core against real device layouts
 phase0/                 the throwaway go/no-go measurement tool (see phase0/README.md)
 scripts/                icon + packaging + release helpers (bump-cask.sh)
 .github/workflows/      build.yml (compile check) + release.yml (tag -> .dmg/.pkg release)
 ```
+
+### Output device layouts
+
+There is no single buffer layout to code against, and assuming one is what broke
+every output except the built-in speakers before v0.1.7. Measured on macOS 26:
+
+| device                 | IOProc buffers        | rate     |
+| ---------------------- | --------------------- | -------- |
+| MacBook Pro speakers   | 1 x 2ch interleaved   | 48 kHz   |
+| Studio Display speakers| 1 x 8ch interleaved   | 48 kHz   |
+| the process tap        | 1 x 2ch interleaved   | 48 kHz   |
+
+So `BufferGeometry.swift` resolves each channel's base pointer and stride from
+the buffer list it was actually handed, frames are `bytes / (channels * 4)`, media
+goes to the channels the device reports in `kAudioDevicePropertyPreferredChannelsForStereo`,
+and every other channel is zeroed (Core Audio does not hand over cleared output
+buffers). The tap's format is read-only and fixed at creation, so a device that
+changes rate or channel count in place - routine for Bluetooth and AirPlay -
+rebuilds the whole graph.
 
 ## Build from source
 
@@ -67,6 +92,13 @@ Needs Xcode Command Line Tools (`swiftc`); no Xcode, no Apple Developer account.
 ```bash
 swift build            # compile
 scripts/package.sh     # build + icon + Unduck.app + Unduck-<version>.pkg in dist/
+```
+
+`swift test` needs the test frameworks, which ship with Xcode rather than the
+command-line tools. With both installed and the CLT selected:
+
+```bash
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test
 ```
 
 ## Install manually (DMG)
@@ -166,7 +198,6 @@ decision. Kept for re-measuring on new OS builds. See `phase0/README.md`.
 ## Known limits (v1, personal-use scope)
 
 - FaceTime only (add bundle IDs in `CallDetector.swift`).
-- Non-interleaved float output assumed (built-in/USB/AirPods - the common case).
 - Bluetooth-HFP output (AirPods used as the call mic) drops to phone quality and
   can't be helped - a documented dead zone.
 - Screen-share audio, browser-hosted calls (Meet in the same browser as media),

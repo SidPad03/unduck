@@ -24,12 +24,12 @@ void unduck_set_gain(UnduckRenderState* s, float gainLinear)      { s->targetGai
 void unduck_set_ceiling(UnduckRenderState* s, float ceilingLinear){ s->ceilingLinear = ceilingLinear; }
 
 void unduck_render(UnduckRenderState* s,
-                   const float* in0, const float* in1, int inCh, int inFrames,
-                   float* out0, float* out1, int outCh, int outFrames) {
-    if (!out0 || outFrames <= 0) return;
+                   UnduckSrc inL, UnduckSrc inR, int inFrames,
+                   UnduckDst outL, UnduckDst outR, int outFrames) {
+    if (!outL.base || outFrames <= 0) return;
 
-    const int stereoOut = (outCh >= 2 && out1 != 0);
-    const int stereoIn  = (inCh  >= 2 && in1  != 0);
+    const int monoOut = (outR.base == 0);
+    const int monoIn  = (inR.base  == 0);
 
     int n = inFrames < outFrames ? inFrames : outFrames;
     if (n < 0) n = 0;
@@ -48,11 +48,13 @@ void unduck_render(UnduckRenderState* s,
     for (int i = 0; i < n; ++i) {
         g += (tg - g) * gainCoeff;
 
-        const float l = in0 ? in0[i] : 0.0f;
-        const float r = stereoIn ? in1[i] : l;
+        const float l = inL.base ? inL.base[(long)i * inL.stride] : 0.0f;
+        const float r = monoIn ? l : inR.base[(long)i * inR.stride];
 
-        const float bl = l * g;
-        const float br = r * g;
+        float bl = l * g;
+        float br = r * g;
+        // A mono sink gets the downmix rather than half the programme material.
+        if (monoOut) { bl = 0.5f * (bl + br); br = bl; }
 
         // peak limiter: keep our (pre-system-duck) output at/below the ceiling so
         // that after the system attenuates it, the final level lands under 0 dBFS.
@@ -64,8 +66,8 @@ void unduck_render(UnduckRenderState* s,
         env += (desired - env) * (desired < env ? atkCoeff : relCoeff);  // fast attack, slow release
         if (env < minEnv) minEnv = env;
 
-        out0[i] = bl * env;
-        if (stereoOut) out1[i] = br * env;
+        outL.base[(long)i * outL.stride] = bl * env;
+        if (!monoOut) outR.base[(long)i * outR.stride] = br * env;
 
         // env is non-negative, so the post-limiter peak is just amax scaled by it.
         const float op = amax * env;
@@ -74,8 +76,8 @@ void unduck_render(UnduckRenderState* s,
 
     // Whatever the tap did not cover: silence, not the buffer's previous contents.
     for (int i = n; i < outFrames; ++i) {
-        out0[i] = 0.0f;
-        if (stereoOut) out1[i] = 0.0f;
+        outL.base[(long)i * outL.stride] = 0.0f;
+        if (!monoOut) outR.base[(long)i * outR.stride] = 0.0f;
     }
 
     s->currentGain = g;
