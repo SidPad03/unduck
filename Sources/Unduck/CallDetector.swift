@@ -2,7 +2,7 @@ import Foundation
 import CoreAudio
 import OSLog
 
-private let log = Logger(subsystem: "com.sigmanet.unduck", category: "CallDetector")
+private let log = Logger(subsystem: "io.github.sidpad03.unduck", category: "CallDetector")
 
 /// Detects an active call by watching whether any communication process has its
 /// mic running (`kAudioProcessPropertyIsRunningInput`). A 4 Hz poll is used
@@ -36,7 +36,7 @@ final class CallDetector {
     private let deactivateAfter = 8   // ~2.0 s of no mic use
 
     /// All HAL polling happens here, never on main.
-    private let queue = DispatchQueue(label: "com.sigmanet.unduck.calldetector", qos: .utility)
+    private let queue = DispatchQueue(label: "io.github.sidpad03.unduck.calldetector", qos: .utility)
 
     // Everything below is owned by `queue`.
     private var timer: DispatchSourceTimer?

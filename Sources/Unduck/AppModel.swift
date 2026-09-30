@@ -6,7 +6,7 @@ import CoreAudio
 import ServiceManagement
 import OSLog
 
-private let log = Logger(subsystem: "com.sigmanet.unduck", category: "AppModel")
+private let log = Logger(subsystem: "io.github.sidpad03.unduck", category: "AppModel")
 
 /// Fast-changing meter state, deliberately kept OUT of `AppModel`.
 ///

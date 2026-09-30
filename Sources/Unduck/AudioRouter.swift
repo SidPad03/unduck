@@ -3,7 +3,7 @@ import CoreAudio
 import CUnduckRender
 import OSLog
 
-private let log = Logger(subsystem: "com.sigmanet.unduck", category: "AudioRouter")
+private let log = Logger(subsystem: "io.github.sidpad03.unduck", category: "AudioRouter")
 
 /// Owns the process tap + private aggregate device + IOProc that captures media
 /// audio, boosts it (to cancel FaceTime's duck), and re-injects it to the real
@@ -32,10 +32,10 @@ final class AudioRouter {
         }
     }
 
-    static let aggregateUIDPrefix = "com.sigmanet.unduck.aggregate."
+    static let aggregateUIDPrefix = "io.github.sidpad03.unduck.aggregate."
 
     /// Serialises the whole HAL object lifecycle. Nothing here touches the UI.
-    private let queue = DispatchQueue(label: "com.sigmanet.unduck.router", qos: .userInitiated)
+    private let queue = DispatchQueue(label: "io.github.sidpad03.unduck.router", qos: .userInitiated)
 
     // Owned by `queue`.
     private var tapID = AudioObjectID(kAudioObjectUnknown)

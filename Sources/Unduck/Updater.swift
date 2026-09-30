@@ -3,7 +3,7 @@ import AppKit
 import OSLog
 import Security
 
-private let log = Logger(subsystem: "com.sigmanet.unduck", category: "Updater")
+private let log = Logger(subsystem: "io.github.sidpad03.unduck", category: "Updater")
 
 /// Self-updater against the GitHub Releases API.
 ///

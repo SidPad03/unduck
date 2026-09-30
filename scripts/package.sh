@@ -13,7 +13,9 @@ source "$ROOT/scripts/lib.sh"
 
 VERSION="${1:-$(tr -d '[:space:]' < VERSION 2>/dev/null || echo 0.1.0)}"
 APP_NAME="Unduck"
-BUNDLE_ID="com.sigmanet.unduck"
+# Settings, privacy permissions and the login item are all keyed to this ID, so
+# changing it makes macOS treat the app as a new one (as happened in 0.1.9).
+BUNDLE_ID="io.github.sidpad03.unduck"
 DIST="$ROOT/dist"
 APP="$DIST/$APP_NAME.app"
 PKG="$DIST/$APP_NAME-$VERSION.pkg"

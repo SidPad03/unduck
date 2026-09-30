@@ -1,10 +1,11 @@
 #!/bin/bash
 # Create (or reuse) a Gitea release for v$VERSION and upload the built .pkg.
 # Matches the unified-mcp-gateway release convention (token + optional Host header).
-# Env: GIT_TOKEN (required), VERSION (required), GITEA_API, GITEA_HOST (optional).
+# Env: GIT_TOKEN, VERSION and GITEA_API (all required), GITEA_HOST (optional).
+# GITEA_API is the repo's API root, e.g. https://git.example.com/api/v1/repos/<owner>/unduck.
 set -euo pipefail
 : "${GIT_TOKEN:?need GIT_TOKEN}"; : "${VERSION:?need VERSION}"
-API="${GITEA_API:-https://git.sigmanet.com/api/v1/repos/sid/unduck}"
+API="${GITEA_API:?need GITEA_API (the repo API root on your Gitea)}"
 host=(); [ -n "${GITEA_HOST:-}" ] && host=(-H "Host: ${GITEA_HOST}")
 auth=(-H "Authorization: token ${GIT_TOKEN}")
 TAG="v${VERSION}"
