@@ -1,9 +1,15 @@
 #!/bin/bash
-# Build Unduck, assemble the .app bundle, ad-hoc sign it, and produce an
-# installer .pkg. Usage: scripts/package.sh [version]  (defaults to ./VERSION)
+# Build Unduck, assemble the .app bundle, sign it, and produce an installer .pkg.
+# Usage: scripts/package.sh [version]  (defaults to ./VERSION)
+#
+# Signs with the Developer ID identities in the keychain when there are any, and
+# ad-hoc otherwise (resolve_signing in scripts/lib.sh). NOTARIZE=1 also
+# notarizes and staples the .pkg (build-dmg.sh does the .dmg); it needs both
+# Developer ID identities and credentials - see notary_ready in scripts/lib.sh.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+source "$ROOT/scripts/lib.sh"
 
 VERSION="${1:-$(tr -d '[:space:]' < VERSION 2>/dev/null || echo 0.1.0)}"
 APP_NAME="Unduck"
@@ -11,6 +17,15 @@ BUNDLE_ID="com.sigmanet.unduck"
 DIST="$ROOT/dist"
 APP="$DIST/$APP_NAME.app"
 PKG="$DIST/$APP_NAME-$VERSION.pkg"
+
+# Resolved before building, so a release that can't be notarized fails in
+# seconds rather than after the compile.
+resolve_signing
+if [ "${NOTARIZE:-0}" = 1 ]; then
+    [ "$SIGN_ID" != "-" ] || { echo "!! NOTARIZE=1 needs a Developer ID Application identity" >&2; exit 1; }
+    [ -n "$PKG_NAME" ]    || { echo "!! NOTARIZE=1 needs a Developer ID Installer identity" >&2; exit 1; }
+    notary_ready          || { echo "!! NOTARIZE=1 needs NOTARY_PROFILE, or APPLE_ID + APPLE_PASSWORD + APPLE_TEAM_ID" >&2; exit 1; }
+fi
 
 echo "==> Building $APP_NAME $VERSION (release)"
 swift build -c release
@@ -48,17 +63,34 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-echo "==> Ad-hoc signing (no paid account needed for personal use)"
-codesign --force --deep --sign - "$APP"
+# Hardened runtime and a secure timestamp are what notarization requires. The
+# entitlements are the same either way, so an ad-hoc build behaves like a
+# release under the hardened runtime instead of hiding a missing one.
+echo "==> Signing with: $SIGN_NAME"
+if [ "$SIGN_ID" = "-" ]; then
+    codesign --force --options runtime --entitlements "$ROOT/Resources/Unduck.entitlements" \
+        --sign - "$APP"
+else
+    codesign --force --options runtime --timestamp --entitlements "$ROOT/Resources/Unduck.entitlements" \
+        --sign "$SIGN_ID" "$APP"
+fi
 codesign --verify --deep --strict "$APP" && echo "    signature ok"
 
 echo "==> Building installer package"
 mkdir -p "$DIST"
-pkgbuild --install-location /Applications \
-         --component "$APP" \
-         --identifier "$BUNDLE_ID" \
-         --version "$VERSION" \
-         "$PKG"
+if [ -n "$PKG_NAME" ]; then
+    echo "    signing with: $PKG_NAME"
+    pkgbuild --install-location /Applications --component "$APP" \
+             --identifier "$BUNDLE_ID" --version "$VERSION" \
+             --sign "$PKG_NAME" --timestamp "$PKG"
+else
+    pkgbuild --install-location /Applications --component "$APP" \
+             --identifier "$BUNDLE_ID" --version "$VERSION" "$PKG"
+fi
+
+if [ "${NOTARIZE:-0}" = 1 ]; then
+    notarize "$PKG"
+fi
 
 echo ""
 echo "==> Done."

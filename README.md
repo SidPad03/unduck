@@ -14,9 +14,10 @@ audio at a level you control while leaving the call audio untouched.
 brew install --cask SidPad03/tap/unduck
 ```
 
-First launch: because it's ad-hoc signed (not notarized), macOS may block it once.
-Right-click **Unduck** in Applications and choose **Open**, or run
-`xattr -dr com.apple.quarantine /Applications/Unduck.app`. Requires macOS 26.1+.
+Releases are signed with a Developer ID and notarized by Apple, so Unduck opens
+like any other app. (Releases up to 0.1.7 were ad-hoc signed; for one of those,
+right-click **Unduck** in Applications and choose **Open**, or run
+`xattr -dr com.apple.quarantine /Applications/Unduck.app`.) Requires macOS 26.1+.
 Update later with `brew upgrade --cask unduck`.
 
 (Prefer a plain download? Grab the `.dmg` from
@@ -60,9 +61,10 @@ Sources/
     AppModel.swift      state machine, settings, metering, launch-at-login, device/format-change rebuild
     Updater.swift       self-update via the GitHub releases API
     UnduckApp.swift     MenuBarExtra UI (Liquid Glass materials, media-boost slider, meter)
+Resources/              Unduck.entitlements (hardened-runtime audio input)
 Tests/UnduckTests/      buffer geometry + DSP core against real device layouts
 phase0/                 the throwaway go/no-go measurement tool (see phase0/README.md)
-scripts/                icon + packaging + release helpers (bump-cask.sh)
+scripts/                icon + packaging + signing + release helpers (bump-cask.sh)
 .github/workflows/      build.yml (compile check) + release.yml (tag -> .dmg/.pkg release)
 ```
 
@@ -94,6 +96,9 @@ swift build            # compile
 scripts/package.sh     # build + icon + Unduck.app + Unduck-<version>.pkg in dist/
 ```
 
+`package.sh` signs with the Developer ID certificates in your keychain when it
+finds them, and ad-hoc otherwise, so a build without an Apple account still works.
+
 `swift test` needs the test frameworks, which ship with Xcode rather than the
 command-line tools. With both installed and the CLT selected:
 
@@ -105,12 +110,18 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test
 
 1. Download `Unduck-<version>.dmg` from the [Releases page](https://github.com/SidPad03/unduck/releases) (or build it below).
 2. Open the `.dmg` and drag **Unduck** onto the **Applications** shortcut.
-3. Because it's ad-hoc signed (personal use, not notarized), the first launch may be
-   blocked as "unidentified developer" - right-click Unduck in Applications and choose
-   **Open**, or clear quarantine:
+3. Launch it. Releases are notarized, so there is no Gatekeeper warning. An
+   ad-hoc build (0.1.7 and earlier, or one built without a Developer ID) is
+   blocked as "unidentified developer" the first time - right-click Unduck in
+   Applications and choose **Open**, or clear quarantine:
    ```bash
    xattr -dr com.apple.quarantine /Applications/Unduck.app
    ```
+
+Moving from an ad-hoc build to a signed one, macOS asks for **System Audio
+Recording** once more: it grants permissions to a signature, and the signature
+changed. After that the Developer ID signature stays the same across updates, so
+it won't ask again.
 
 ### First run
 - On the first call, macOS prompts for **System Audio Recording** - allow it (this
@@ -128,7 +139,8 @@ place: Unduck downloads the `.dmg`, replaces its own bundle, and restarts. No
 installer wizard and no admin prompt.
 
 How the swap works: the DMG is mounted, the new `Unduck.app` is copied out and
-checked (its version must match the tag, and its signature must verify), then a
+checked (its version must match the tag, its signature must verify, and a
+Developer ID build only accepts an update signed by the same team), then a
 small script waits for Unduck to quit, swaps the bundle and relaunches it. If the
 copy fails the old version is moved back, so a failed update can't leave you
 without an app.
@@ -143,8 +155,9 @@ agree - the release workflow enforces this, because a mismatch would leave the
 updater offering an update the user already has, forever.
 
 Why this and not Sparkle: Sparkle wants a Developer-ID-signed app, an EdDSA
-keypair, and a zipped-app appcast - heavy for an ad-hoc-signed `.pkg`. If Unduck
-ever goes notarized, switch to Sparkle.
+keypair, and a zipped-app appcast. That was too heavy while releases were
+ad-hoc signed. Now that they're notarized, Sparkle is an option, but this updater
+works and already refuses a download signed by another team.
 
 ## Building & releasing
 
@@ -159,6 +172,27 @@ is why the old self-hosted Linux runner couldn't build it.
 
 Installers are never committed; they're built from source by the tag that ships
 them, so a release can't disagree with the code it claims to be.
+
+### Signing secrets
+
+`release.yml` signs and notarizes when these repository secrets exist, and falls
+back to an ad-hoc release (and says so in the notes) when they don't:
+
+| Secret | What it is |
+| --- | --- |
+| `APPLE_CERTIFICATE` | base64 of one `.p12` holding both the **Developer ID Application** and **Developer ID Installer** identities |
+| `APPLE_CERTIFICATE_PASSWORD` | the `.p12`'s export password |
+| `APPLE_ID` | the Apple Account email used for notarization |
+| `APPLE_PASSWORD` | an app-specific password for it (account.apple.com → Sign-In and Security) |
+| `APPLE_TEAM_ID` | the 10-character team ID |
+
+To sign and notarize a release locally instead, store the credentials once, then
+build with `NOTARIZE=1`:
+
+```bash
+xcrun notarytool store-credentials notary --apple-id <email> --team-id <TEAMID>
+NOTARIZE=1 NOTARY_PROFILE=notary scripts/build-dmg.sh 0.1.8
+```
 
 ### Releasing
 

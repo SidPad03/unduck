@@ -14,8 +14,15 @@ PKG="dist/Unduck-${VERSION}.pkg"
 curl -s -X POST "${auth[@]}" "${host[@]}" -H "Content-Type: application/json" \
      -d "{\"tag_name\":\"${TAG}\",\"target\":\"main\"}" "${API}/tags" >/dev/null || true
 
+# A stapled ticket is what makes the package open cleanly; say which kind this is.
+if xcrun stapler validate "$PKG" >/dev/null 2>&1; then
+  BODY="Native arm64, Developer ID signed and notarized."
+else
+  BODY="Native arm64, ad-hoc signed. First launch: allow it in System Settings > Privacy & Security (or xattr -dr com.apple.quarantine the app)."
+fi
+
 RID=$(curl -s -X POST "${auth[@]}" "${host[@]}" -H "Content-Type: application/json" \
-      -d "{\"tag_name\":\"${TAG}\",\"name\":\"Unduck ${TAG}\",\"body\":\"Native arm64, ad-hoc signed. First launch: allow it in System Settings > Privacy & Security (or xattr -dr com.apple.quarantine the app).\"}" \
+      -d "{\"tag_name\":\"${TAG}\",\"name\":\"Unduck ${TAG}\",\"body\":\"${BODY}\"}" \
       "${API}/releases" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("id",""))')
 [ -n "$RID" ] || { echo "could not create/resolve release for ${TAG}"; exit 1; }
 
