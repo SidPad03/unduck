@@ -65,7 +65,7 @@ Resources/              Unduck.entitlements (hardened-runtime audio input)
 Tests/UnduckTests/      buffer geometry + DSP core against real device layouts
 phase0/                 the throwaway go/no-go measurement tool (see phase0/README.md)
 scripts/                icon + packaging + signing + release helpers (bump-cask.sh)
-.github/workflows/      build.yml (compile check) + release.yml (tag -> .dmg/.pkg release)
+.github/workflows/      build.yml (compile check) + release.yml (push to main -> signed, notarized release)
 ```
 
 ### Output device layouts
@@ -150,9 +150,9 @@ or when the app lives somewhere it can't rewrite without privileges. Repo
 coordinates live in `Info.plist` (`UnduckUpdateBase`/`Owner`/`Repo`), so a fork
 only has to change those.
 
-The tag, the `VERSION` file and the bundle's `CFBundleShortVersionString` must all
-agree - the release workflow enforces this, because a mismatch would leave the
-updater offering an update the user already has, forever.
+The tag and the bundle's `CFBundleShortVersionString` must agree - the release
+workflow decides the version once and builds with it, because a mismatch would
+leave the updater offering an update the user already has, forever.
 
 Why this and not Sparkle: Sparkle wants a Developer-ID-signed app, an EdDSA
 keypair, and a zipped-app appcast. That was too heavy while releases were
@@ -166,12 +166,12 @@ can't be cross-compiled - the Apple frameworks live only in the macOS SDK - whic
 is why the old self-hosted Linux runner couldn't build it.
 
 - `.github/workflows/build.yml` - compiles and packages on every push and PR.
-- `.github/workflows/release.yml` - on a `v*` tag, builds the `.app`, `.pkg` and
-  `.dmg` from the tagged commit and attaches the `.pkg` + `.dmg` to a GitHub
-  Release.
+- `.github/workflows/release.yml` - on every push to `main` that changes the app,
+  tests, builds, signs, notarizes and publishes the next release, then updates
+  the Homebrew cask. Nothing to do by hand.
 
-Installers are never committed; they're built from source by the tag that ships
-them, so a release can't disagree with the code it claims to be.
+Installers are never committed; they're built from source by the commit that
+ships them, so a release can't disagree with the code it claims to be.
 
 ### Signing secrets
 
@@ -196,26 +196,27 @@ NOTARIZE=1 NOTARY_PROFILE=notary scripts/build-dmg.sh 0.1.8
 
 ### Releasing
 
-```bash
-echo 0.1.4 > VERSION
-git commit -am "Release 0.1.4"
-git tag v0.1.4
-git push origin main --tags
+Merge (or push) to `main`. When the push touches the app - `Sources/`,
+`Package.swift`, `Resources/`, `VERSION` or the packaging scripts - `release.yml`:
 
-scripts/bump-cask.sh 0.1.4    # so `brew install` stops serving the old build
+1. picks the version: the next patch after the newest `v*` tag (0.1.8 -> 0.1.9);
+2. runs the tests, then builds the `.app`, `.pkg` and `.dmg` with that version;
+3. signs them with the Developer ID and notarizes them with Apple;
+4. publishes the GitHub Release, which creates the `v<version>` tag on that commit;
+5. points `sidpad03/tap/unduck` at the new DMG, through the `HOMEBREW_TAP_SSH_KEY`
+   deploy key on the tap repository.
+
+Docs and test-only changes don't release. For a minor or major bump, put the new
+version in `VERSION` (`echo 0.2.0 > VERSION`) and push - a `VERSION` newer than
+the newest tag is used as-is. To release by hand, run the workflow from the
+**Actions** tab, optionally with a version:
+
+```bash
+gh workflow run release.yml -f version=0.2.0
 ```
 
-The workflow fails fast if `VERSION` doesn't match the tag, and re-checks the
-version baked into the built bundle - a mismatch would leave the in-app updater
-offering an update the user already has. You can also run it from the **Actions**
-tab, or:
-
-```bash
-gh workflow run release.yml -f version=0.1.4
-```
-
-Don't skip `bump-cask.sh`: the cask pins an exact version and sha256, so
-`brew install --cask` keeps serving the previous build until the tap is updated.
+`scripts/bump-cask.sh` still updates the cask from your Mac, if the workflow's
+cask step ever can't.
 
 ### Building locally
 
