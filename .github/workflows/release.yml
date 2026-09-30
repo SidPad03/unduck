@@ -1,24 +1,47 @@
 name: Release
 
-# Tag a version to publish it:
+# Every push to main that changes the app releases it, with nothing done by hand:
+# the next version is worked out here, then the .app, .pkg and .dmg are built,
+# signed with the Developer ID, notarized, published as a GitHub Release (which
+# creates the tag), and the Homebrew cask is pointed at it.
 #
-#   echo 0.1.3 > VERSION && git commit -am "Release 0.1.3"
-#   git tag v0.1.3 && git push origin main --tags
+# Versions: the next patch after the newest v* tag (0.1.8 -> 0.1.9). To jump to
+# a new minor or major, write it to VERSION and push; a VERSION newer than the
+# newest tag is used as-is. The Actions tab can also run this with an explicit
+# version.
 #
-# This builds the .app, .pkg and .dmg on a real macOS runner and attaches the
-# .pkg + .dmg to a GitHub Release. The in-app updater reads that release, so the
-# tag, the VERSION file and the published assets all have to agree.
+# Only changes that alter the shipped app trigger it, so a README edit or a test
+# change does not put an update prompt in front of every user.
 on:
   push:
-    tags: ["v*"]
+    branches: [main]
+    paths:
+      - "Sources/**"
+      - "Package.swift"
+      - "Package.resolved"
+      - "Resources/**"
+      - "VERSION"
+      - "scripts/package.sh"
+      - "scripts/build-dmg.sh"
+      - "scripts/lib.sh"
+      - "scripts/build-icon.sh"
+      - "scripts/make-icon.swift"
+      - "scripts/make-dmg-bg.swift"
   workflow_dispatch:
     inputs:
       version:
-        description: "Version to build, without the leading v (e.g. 0.1.3)"
-        required: true
+        description: "Version to release, without the leading v. Empty = the next patch."
+        required: false
 
 permissions:
   contents: write   # required to create the release and upload assets
+
+# One release at a time, queued rather than cancelled: two quick pushes must
+# not both compute the same next version, and a cancelled run could leave a
+# notarized build unpublished.
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 jobs:
   release:
@@ -28,38 +51,48 @@ jobs:
     env:
       APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
       APPLE_ID: ${{ secrets.APPLE_ID }}
+      TAP_KEY: ${{ secrets.HOMEBREW_TAP_SSH_KEY }}
 
     steps:
       - uses: actions/checkout@v4
 
+      # The tag, the bundle's CFBundleShortVersionString and the release must all
+      # agree, or the in-app updater offers an update the user already has,
+      # forever. So the version is decided once, here, and handed to the build.
       - name: Resolve version
         id: v
+        env:
+          REQUESTED: ${{ inputs.version }}
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            VERSION="${{ inputs.version }}"
+          LATEST="$(git ls-remote --tags --refs origin 'v*' | sed 's|.*refs/tags/v||' | sort -V | tail -1)"
+          FILE="$(tr -d '[:space:]' < VERSION)"
+          if [ -n "$REQUESTED" ]; then
+            VERSION="$REQUESTED"
+          elif [ -z "$LATEST" ]; then
+            VERSION="$FILE"
+          elif [ "$FILE" != "$LATEST" ] && [ "$(printf '%s\n%s\n' "$LATEST" "$FILE" | sort -V | tail -1)" = "$FILE" ]; then
+            VERSION="$FILE"
           else
-            VERSION="${GITHUB_REF_NAME#v}"
+            IFS=. read -r MAJOR MINOR PATCH <<<"$LATEST"
+            VERSION="$MAJOR.$MINOR.$((PATCH + 1))"
+          fi
+          if git ls-remote --exit-code --tags origin "refs/tags/v$VERSION" >/dev/null; then
+            echo "::error::v$VERSION already exists; set VERSION or pass a version to release something newer."
+            exit 1
           fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "tag=v$VERSION"    >> "$GITHUB_OUTPUT"
-          echo "Building version $VERSION"
-
-      - name: VERSION file must match the tag
-        run: |
-          FILE_VERSION="$(tr -d '[:space:]' < VERSION)"
-          WANT="${{ steps.v.outputs.version }}"
-          if [ "$FILE_VERSION" != "$WANT" ]; then
-            echo "::error::VERSION file says '$FILE_VERSION' but the tag says '$WANT'."
-            echo "::error::They must match, or the app will ship reporting the wrong"
-            echo "::error::CFBundleShortVersionString and the updater will loop forever"
-            echo "::error::offering an update the user already has."
-            exit 1
-          fi
+          echo "Newest tag: v${LATEST:-none}, VERSION file: $FILE -> releasing $VERSION"
 
       - name: Toolchain
         run: |
           swift --version
           xcodebuild -version
+
+      # A release goes out on every qualifying push, so the tests gate it here
+      # rather than only reporting in build.yml alongside.
+      - name: Test
+        run: swift test
 
       # APPLE_CERTIFICATE is a base64 .p12 holding both the Developer ID
       # Application identity (the app, the DMG) and the Developer ID Installer
@@ -170,8 +203,66 @@ jobs:
             gh release upload "$TAG" \
               "dist/Unduck-${VERSION}.dmg" "dist/Unduck-${VERSION}.pkg" --clobber
           else
+            # --target pins the new tag to the commit this run built, not to
+            # whatever main has moved on to by now.
             gh release create "$TAG" \
+              --target "$GITHUB_SHA" \
               --title "Unduck $TAG" \
               --notes "$NOTES" \
               "dist/Unduck-${VERSION}.dmg" "dist/Unduck-${VERSION}.pkg"
           fi
+
+      # Point the Homebrew cask at the release that just published, so
+      # `brew install --cask sidpad03/tap/unduck` never hands out the previous
+      # build. Same approach as unified-mcp-gateway's ci.yml: a deploy key on
+      # SidPad03/homebrew-tap, private half in HOMEBREW_TAP_SSH_KEY. A deploy key
+      # reaches that one repository and nothing else. Skipped without the secret,
+      # so a fork still releases.
+      - name: Update the Homebrew cask
+        if: env.TAP_KEY != ''
+        env:
+          VERSION: ${{ steps.v.outputs.version }}
+        run: |
+          set -euo pipefail
+          SHA="$(shasum -a 256 "dist/Unduck-${VERSION}.dmg" | awk '{print $1}')"
+
+          # ssh will not read a key from stdin, so it goes to a file with tight
+          # permissions and is removed however this step exits.
+          KEYFILE="$(mktemp)"
+          trap 'rm -f "$KEYFILE"' EXIT
+          printf '%s\n' "$TAP_KEY" > "$KEYFILE"
+          chmod 600 "$KEYFILE"
+          export GIT_SSH_COMMAND="ssh -i $KEYFILE -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
+
+          rm -rf tap
+          git clone --depth 1 git@github.com:SidPad03/homebrew-tap.git tap
+          cd tap
+          CASK="Casks/unduck.rb"
+
+          # Anchored to the start of the line so nothing else version-shaped in
+          # the file can be rewritten. BSD sed on the macOS runner: -i takes an
+          # explicit (empty) backup suffix.
+          sed -i '' -E "s|^  version \".*\"|  version \"${VERSION}\"|" "$CASK"
+          sed -i '' -E "s|^  sha256 \".*\"|  sha256 \"${SHA}\"|" "$CASK"
+          grep -q "^  version \"${VERSION}\"$" "$CASK" || {
+            echo "::error::the cask version was not rewritten"; exit 1; }
+          grep -q "^  sha256 \"${SHA}\"$" "$CASK" || {
+            echo "::error::the cask sha256 was not rewritten"; exit 1; }
+
+          if git diff --quiet; then
+            echo "cask already points at ${VERSION}"
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -qam "unduck ${VERSION}"
+          # The gateway's pipeline pushes to the same tap, so a push can lose a
+          # race. Rebase onto whatever landed and try again.
+          for attempt in 1 2 3; do
+            git push -q && { echo "cask bumped to ${VERSION}"; exit 0; }
+            sleep $((attempt * 5))
+            git pull -q --rebase
+          done
+          echo "::error::could not push the cask after 3 attempts"
+          exit 1
