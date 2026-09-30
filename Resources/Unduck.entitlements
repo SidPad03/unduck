@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Direct-download build (Developer ID, hardened runtime). scripts/package.sh.
+
+  The hardened runtime, which notarization requires, denies audio input to any
+  process that does not claim it here. Unduck's IOProc reads the process tap
+  through its aggregate device's input side, and it watches for microphone use.
+  Nothing is ever recorded.
+-->
+<plist version="1.0">
+<dict>
+	<key>com.apple.security.device.audio-input</key>
+	<true/>
+</dict>
+</plist>

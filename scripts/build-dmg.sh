@@ -1,8 +1,13 @@
 #!/bin/bash
 # Build a shareable DMG with a drag-to-Applications layout. Writes to dist/ and
 # copies into releases/. Usage: scripts/build-dmg.sh [version]  (defaults to ./VERSION)
+#
+# The DMG is signed with the same identity as the app. NOTARIZE=1 notarizes and
+# staples both the .pkg (in package.sh) and the .dmg:
+#   NOTARIZE=1 NOTARY_PROFILE=notary scripts/build-dmg.sh 0.1.8
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"; cd "$ROOT"
+source "$ROOT/scripts/lib.sh"
 VERSION="${1:-$(tr -d '[:space:]' < VERSION)}"
 APP_NAME="Unduck"
 VOL="Unduck"
@@ -65,6 +70,18 @@ OUT="dist/${APP_NAME}-${VERSION}.dmg"
 rm -f "$OUT"
 hdiutil convert "$RW" -format UDZO -imagekey zlib-level=9 -o "$OUT" >/dev/null
 rm -f "$RW"
+
+# Gatekeeper checks the image someone downloads before anything inside it, so
+# the image carries a signature of its own. package.sh already refused
+# NOTARIZE=1 without a Developer ID identity, so SIGN_ID is a real one here.
+resolve_signing
+if [ "$SIGN_ID" != "-" ]; then
+    echo "==> Signing the DMG"
+    codesign --force --timestamp --sign "$SIGN_ID" "$OUT"
+fi
+if [ "${NOTARIZE:-0}" = 1 ]; then
+    notarize "$OUT"
+fi
 mkdir -p releases && cp -f "$OUT" "releases/${APP_NAME}-${VERSION}.dmg"
 
 echo ""

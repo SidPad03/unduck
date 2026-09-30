@@ -1,6 +1,7 @@
 import Foundation
 import AppKit
 import OSLog
+import Security
 
 private let log = Logger(subsystem: "com.sigmanet.unduck", category: "Updater")
 
@@ -17,7 +18,8 @@ private let log = Logger(subsystem: "com.sigmanet.unduck", category: "Updater")
 /// release has no DMG or when the bundle can't be replaced without privileges.
 ///
 /// Why not Sparkle: it wants a Developer-ID-signed app, an EdDSA keypair, and an
-/// appcast. If Unduck ever goes notarized, switch to it.
+/// appcast. Releases are Developer ID signed and notarized now, so Sparkle is an
+/// option; this updater already refuses a download signed by any other team.
 @MainActor
 final class Updater: ObservableObject {
 
@@ -203,10 +205,31 @@ final class Updater: ObservableObject {
         guard got == expectedVersion else {
             throw err("The download reported version \(got.isEmpty ? "unknown" : got), expected \(expectedVersion).")
         }
-        guard run("/usr/bin/codesign", ["--verify", "--strict", staged.path]) == 0 else {
+        // A Developer ID build only accepts an update signed by the same team, so a
+        // release asset swapped on GitHub is refused unless its signer also holds
+        // the team's certificate. An ad-hoc build has no team to hold it to, which
+        // is also what lets one update to the first Developer ID release.
+        var verify = ["--verify", "--strict"]
+        if let team = ownTeamID() {
+            verify += ["-R", "=anchor apple generic and certificate leaf[subject.OU] = \"\(team)\""]
+        }
+        guard run("/usr/bin/codesign", verify + [staged.path]) == 0 else {
             throw err("The downloaded copy failed signature verification.")
         }
         return staged
+    }
+
+    /// The team ID this copy was signed with, or nil when it is ad-hoc signed.
+    private nonisolated static func ownTeamID() -> String? {
+        var code: SecCode?
+        var staticCode: SecStaticCode?
+        var info: CFDictionary?
+        guard SecCodeCopySelf([], &code) == errSecSuccess, let code,
+              SecCodeCopyStaticCode(code, [], &staticCode) == errSecSuccess, let staticCode,
+              SecCodeCopySigningInformation(staticCode, SecCSFlags(rawValue: kSecCSSigningInformation),
+                                            &info) == errSecSuccess
+        else { return nil }
+        return (info as? [String: Any])?[kSecCodeInfoTeamIdentifier as String] as? String
     }
 
     /// Spawn the script that waits for us to quit, swaps the bundle and relaunches.
