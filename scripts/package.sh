@@ -54,7 +54,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>$VERSION</string>
   <key>CFBundleVersion</key><string>$VERSION</string>
-  <key>LSMinimumSystemVersion</key><string>26.1</string>
+  <key>LSMinimumSystemVersion</key><string>14.2</string>
   <key>LSUIElement</key><true/>
   <key>NSAudioCaptureUsageDescription</key><string>Unduck captures your media apps' audio so it can replay it at the volume you choose while a call ducks everything else. Audio is never recorded or sent anywhere.</string>
   <key>NSMicrophoneUsageDescription</key><string>Unduck watches microphone activity to detect when a call starts and ends. It never records.</string>

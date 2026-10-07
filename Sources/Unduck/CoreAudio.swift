@@ -117,7 +117,18 @@ enum CA {
 
     /// Total output channels the device presents, summed across its buffers.
     static func outputChannelCount(_ device: AudioObjectID) -> Int {
-        var addr = address(kAudioDevicePropertyStreamConfiguration, kAudioObjectPropertyScopeOutput)
+        channelCount(device, kAudioObjectPropertyScopeOutput)
+    }
+
+    /// Total input channels the device presents. An audio interface is
+    /// one device with inputs AND outputs, and those inputs come first in the
+    /// aggregate's input buffer list, ahead of the tap.
+    static func inputChannelCount(_ device: AudioObjectID) -> Int {
+        channelCount(device, kAudioObjectPropertyScopeInput)
+    }
+
+    private static func channelCount(_ device: AudioObjectID, _ scope: AudioObjectPropertyScope) -> Int {
+        var addr = address(kAudioDevicePropertyStreamConfiguration, scope)
         var size: UInt32 = 0
         guard AudioObjectGetPropertyDataSize(device, &addr, 0, nil, &size) == noErr, size > 0 else { return 0 }
         let raw = UnsafeMutableRawPointer.allocate(byteCount: Int(size), alignment: MemoryLayout<AudioBufferList>.alignment)

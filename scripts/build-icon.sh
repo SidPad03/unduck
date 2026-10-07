@@ -5,7 +5,12 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 RES="$ROOT/Resources"
 mkdir -p "$RES"
 
-swift "$ROOT/scripts/make-icon.swift" "$RES/AppIcon-1024.png"
+# Compile instead of `swift file.swift`. The JIT interpreter looks up
+# CoreGraphics overlay symbols in the running OS, which macOS 14 does not have when
+# the toolchain ships a newer SDK. A compiled binary with a 14.2 target links them.
+TOOL_DIR="$(mktemp -d)"
+swiftc -O -target "$(uname -m)-apple-macos14.2" "$ROOT/scripts/make-icon.swift" -o "$TOOL_DIR/make-icon"
+"$TOOL_DIR/make-icon" "$RES/AppIcon-1024.png"
 
 ICONSET="$(mktemp -d)/AppIcon.iconset"
 mkdir -p "$ICONSET"

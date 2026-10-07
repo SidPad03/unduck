@@ -86,7 +86,7 @@ struct PopoverView: View {
             header
 
             if case .unsupportedOS = model.state {
-                banner("This Mac needs macOS 26.1 or later for reliable routing.", .orange)
+                banner("This Mac needs macOS 14.2 or later for routing.", .orange)
             }
             if case .error(let msg) = model.state {
                 banner(msg, .red)

@@ -17,7 +17,7 @@ brew install --cask SidPad03/tap/unduck
 Releases are signed with a Developer ID and notarized by Apple, so Unduck opens
 like any other app. (Releases up to 0.1.7 were ad-hoc signed; for one of those,
 right-click **Unduck** in Applications and choose **Open**, or run
-`xattr -dr com.apple.quarantine /Applications/Unduck.app`.) Requires macOS 26.1+.
+`xattr -dr com.apple.quarantine /Applications/Unduck.app`.) Requires macOS 14.2+.
 Update later with `brew upgrade --cask unduck`.
 
 (Prefer a plain download? Grab the `.dmg` from

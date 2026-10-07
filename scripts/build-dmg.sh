@@ -22,7 +22,10 @@ STAGE="$(mktemp -d)/stage"; mkdir -p "$STAGE"
 cp -R "$APP" "$STAGE/"
 ln -s /Applications "$STAGE/Applications"
 mkdir "$STAGE/.background"
-swift scripts/make-dmg-bg.swift "$STAGE/.background/bg.png" >/dev/null
+# Compiled rather than JIT-run, for the same reason as in build-icon.sh.
+BG_TOOL="$(mktemp -d)/make-dmg-bg"
+swiftc -O -target "$(uname -m)-apple-macos14.2" scripts/make-dmg-bg.swift -o "$BG_TOOL"
+"$BG_TOOL" "$STAGE/.background/bg.png" >/dev/null
 
 echo "==> Creating writable image"
 RW="$(mktemp -u).dmg"

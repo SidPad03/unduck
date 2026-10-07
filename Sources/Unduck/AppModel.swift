@@ -119,8 +119,9 @@ final class AppModel: ObservableObject {
     var isActive: Bool { state == .active }
 
     var isSupportedOS: Bool {
-        // Real routing needs the 26.1 aggregate-sample-rate fix (spec section 3.4). You are on 26.5.
-        if #available(macOS 26.1, *) { return true } else { return false }
+        // Process taps and tap-backed aggregate devices exist from 14.2. On 14.x
+        // watch the logs for a tap/device sample-rate mismatch (spec section 3.4).
+        if #available(macOS 14.2, *) { return true } else { return false }
     }
 
     init() {
@@ -361,8 +362,11 @@ final class AppModel: ObservableObject {
     func applyAppearance() {
         // setActivationPolicy round-trips to the window server; skip it when the
         // policy already matches (this is called on launch as well as on change).
+        // On macOS 14, AppModel.init runs before NSApplication exists, so NSApp is nil
+        // here; the AppDelegate calls this again from applicationDidFinishLaunching.
+        guard let app = NSApp else { return }
         let policy: NSApplication.ActivationPolicy = (appearance == .menuBar) ? .accessory : .regular
-        if NSApp.activationPolicy() != policy { NSApp.setActivationPolicy(policy) }
+        if app.activationPolicy() != policy { app.setActivationPolicy(policy) }
         if appearance == .menuBar { controlsWindow?.orderOut(nil) }
     }
 
@@ -399,7 +403,7 @@ final class AppModel: ObservableObject {
         case .arming:        return "Starting"
         case .active:        return "On a call, media unducked"
         case .error(let m):  return "Error: \(m)"
-        case .unsupportedOS: return "Needs macOS 26.1 or later"
+        case .unsupportedOS: return "Needs macOS 14.2 or later"
         }
     }
 

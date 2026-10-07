@@ -164,6 +164,18 @@ final class AudioRouter {
         let leftChannel = stereo.left
         let rightChannel = stereo.right
 
+        // Where the tap's channels start in the IOProc's input. The
+        // aggregate's input list is the sub-device's own inputs first, then the tap.
+        // Built-in speakers have no inputs (offset 0, which is all upstream handled);
+        // an audio interface has its mic/line inputs there, and reading channel 0
+        // played the microphone back instead of the media.
+        let tapOffset = CA.inputChannelCount(outputDevice)
+        let aggregateInputs = CA.inputChannelCount(aggregateID)
+        log.info("input layout: device inputs \(tapOffset), aggregate inputs \(aggregateInputs); reading tap from channel \(tapOffset)")
+        if aggregateInputs > 0, aggregateInputs < tapOffset + 2 {
+            log.error("aggregate has \(aggregateInputs) inputs, expected at least \(tapOffset + 2); tap may not be where we read it")
+        }
+
         if let tapFormat = CA.tapStreamFormat(tapID) {
             if tapFormat.mSampleRate != deviceRate {
                 // The tap's format follows the system's default output device and is
@@ -192,8 +204,8 @@ final class AudioRouter {
             let outFrames = outR.base == nil ? outL.frames : min(outL.frames, outR.frames)
 
             let inList = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: inInputData))
-            let inL = locateChannel(inList, 0)
-            let inR = locateChannel(inList, 1)
+            let inL = locateChannel(inList, tapOffset)
+            let inR = locateChannel(inList, tapOffset + 1)
             // The tap and the device can disagree about block size. Pass both counts
             // so the render core never reads past the tap's buffer; when the tap gave
             // us nothing there is no buffer to overrun, so let it render silence

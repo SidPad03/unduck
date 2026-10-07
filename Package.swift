@@ -3,7 +3,7 @@ import PackageDescription
 
 let package = Package(
     name: "Unduck",
-    platforms: [.macOS(.v15)],   // compile floor; the app runtime-gates real routing at 26.1 (see spec §3.4)
+    platforms: [.macOS("14.2")],   // Process taps + tap-backed aggregates exist from 14.2
     targets: [
         // Realtime DSP core in C — no ARC, no allocation, no Swift runtime on the audio thread.
         .target(
